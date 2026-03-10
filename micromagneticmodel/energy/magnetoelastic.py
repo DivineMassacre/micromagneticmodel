@@ -184,6 +184,8 @@ class MagnetoElastic(EnergyTerm):
         "transform_type",
         "transform_script",
         "transform_script_args",
+        "transform_dt",
+        "transform_n_points",
     ]
     _reprlatex = (
         r"B_{1}\sum_{i} m_{i}\epsilon_{ii} + "
@@ -202,6 +204,8 @@ class MagnetoElastic(EnergyTerm):
         transform_type=None,
         transform_script=None,
         transform_script_args=None,
+        transform_dt=None,
+        transform_n_points=None,
         **kwargs,
     ):
         # Validate that only one strain specification method is used
@@ -288,6 +292,8 @@ class MagnetoElastic(EnergyTerm):
         object.__setattr__(self, 'transform_type', transform_type)
         object.__setattr__(self, 'transform_script', transform_script)
         object.__setattr__(self, 'transform_script_args', transform_script_args)
+        object.__setattr__(self, 'transform_dt', transform_dt)
+        object.__setattr__(self, 'transform_n_points', transform_n_points)
 
     @classmethod
     def static(cls, B1, B2, e_diag, e_offdiag, **kwargs):
