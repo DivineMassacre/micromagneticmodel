@@ -132,13 +132,26 @@ class MagnetoElastic(EnergyTerm):
 
         Alternative to ``dt`` (advanced interface). Time step for pre-computation.
 
-    transform_type : {'diagonal', 'symmetric', 'general'}, optional
+    transform_type : {'identity', 'diagonal', 'symmetric', 'general'}, optional
 
         Type of strain representation for time-dependent mode:
 
-        - ``'diagonal'`` (default): 6 values [e11, e22, e33, e23, e13, e12]
-        - ``'symmetric'``: 12 values (symmetric tensor)
-        - ``'general'``: 18 values (full tensor)
+        - ``'identity'``: Identity transformation (no transformation). Returns
+          empty list ``{}``. Use when strain does not change.
+
+        - ``'diagonal'`` (default): Diagonal transformation. Returns 6 values
+          in order: ``[M11, M22, M33, dM11, dM22, dM33]`` for matrix mode, or
+          ``[e11, e22, e33, e23, e13, e12]`` for direct substitution.
+          Use for independent scaling along axes.
+
+        - ``'symmetric'``: Symmetric transformation. Returns 12 values in order:
+          ``[M11, M12, M13, M22, M23, M33, dM11, dM12, dM13, dM22, dM23, dM33]``.
+          The matrix is symmetric: M_ij = M_ji. Use for symmetric deformations.
+
+        - ``'general'``: General transformation. Returns 18 values (full 3×3
+          matrix) in order:
+          ``[M11, M12, M13, M21, M22, M23, M31, M32, M33, dM11, dM12, dM13, dM21, dM22, dM23, dM31, dM32, dM33]``.
+          Use for arbitrary transformations (requires more memory).
 
     transform_script_args : str, optional
 
@@ -620,6 +633,34 @@ class MagnetoElastic(EnergyTerm):
         ...     e_diag=(1e-3, 1e-3, 1e-3),
         ...     tcl_strings={'script': tcl_script},
         ...     transform_type='diagonal'
+        ... )
+
+        5. Using symmetric transform_type:
+
+        >>> def strain_symmetric(t):
+        ...     # 12 components: [M11, M12, M13, M22, M23, M33, dM11, dM12, dM13, dM22, dM23, dM33]
+        ...     m = 1 + 1e-6 * np.sin(2 * np.pi * 1e9 * t)
+        ...     dm = 1e-6 * 2 * np.pi * 1e9 * np.cos(2 * np.pi * 1e9 * t)
+        ...     return [m, 0, 0, m, 0, m, dm, 0, 0, dm, 0, dm]
+        >>> mel = mm.MagnetoElastic.transform(
+        ...     B1=1e7, B2=1e7,
+        ...     func=strain_symmetric,
+        ...     dt=1e-13,
+        ...     transform_type='symmetric'
+        ... )
+
+        6. Using general transform_type:
+
+        >>> def strain_general(t):
+        ...     # 18 components: [M11, M12, M13, M21, M22, M23, M31, M32, M33, ...]
+        ...     m = 1 + 1e-6 * np.sin(2 * np.pi * 1e9 * t)
+        ...     dm = 1e-6 * 2 * np.pi * 1e9 * np.cos(2 * np.pi * 1e9 * t)
+        ...     return [m]*9 + [dm]*9  # Full 3x3 matrix
+        >>> mel = mm.MagnetoElastic.transform(
+        ...     B1=1e7, B2=1e7,
+        ...     func=strain_general,
+        ...     dt=1e-13,
+        ...     transform_type='general'
         ... )
 
         See Also
