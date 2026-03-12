@@ -23,19 +23,24 @@ class MagnetoElastic(EnergyTerm):
         m_{i}m_{j}\epsilon_{ij}
 
     The magneto-elastic energy term allows defining static as well as
-    time-dependent strain. If only ``e_diag`` and ``e_offdiag`` are passed,
-    a time-constant strain is defined (using ``YY_FixedMEL`` in OOMMF).
+    time-dependent strain. Three modes are available:
 
-    For time-dependent strain, two methods are available:
+    1. **Static strain** (YY_FixedMEL): specify ``e_diag`` and ``e_offdiag``
+       for time-constant strain.
 
-    - **Stage-based**: specify a list of OVf files (one per stage) using
-      ``e_diag_files`` and ``e_offdiag_files`` (uses ``YY_StageMEL``)
-    - **Transformation-based**: specify a base strain and a transformation
-      function using ``transform_script`` (uses ``YY_TransformStageMEL``)
+    2. **Stage-based strain** (YY_StageMEL): specify ``e_diag_files`` and
+       ``e_offdiag_files`` (list of OVf files, one per stage).
+
+    3. **Time-dependent strain** (YY_TransformStageMEL): specify ``func``
+       (or ``transform_script``) and ``dt`` (or ``transform_dt``) for
+       strain that varies continuously with time. The function returns
+       full strain values at each time step (direct substitution).
 
     Parameters
     ----------
     B1, B2 : numbers.Real, dict, discretisedfield.Field
+
+        Magneto-elastic coefficients in J/m³.
 
         If a single value ``numbers.Real`` is passed, a spatially constant
         parameter is defined. For a spatially varying parameter, either a
@@ -45,132 +50,143 @@ class MagnetoElastic(EnergyTerm):
 
     e_diag/e_offdiag : (3,) array_like, dict, discretisedfield.Field
 
-        Symmetric strain matrix is assembled from the values of the vector e,
-        so that eps11 = e_diag[0], eps22=e_diag[1], eps33=e_diag[2],
-        eps23=eps32=e_offdiag[0], eps13=eps31=e_offdiag[1],
-        eps12=eps21=e_offdiag[2].
+        Strain components. The symmetric strain matrix is assembled as:
+
+        - eps11 = e_diag[0], eps22 = e_diag[1], eps33 = e_diag[2]
+        - eps23 = eps32 = e_offdiag[0], eps13 = eps31 = e_offdiag[1],
+          eps12 = eps21 = e_offdiag[2]
 
         If a single length-3 array_like (tuple, list, ``numpy.ndarray``) is
         passed, which consists of ``numbers.Real``, a spatially constant
         parameter is defined. For a spatially varying parameter, either a
-        dictionary, e.g. ``e={'region1': (1, 1, 1), 'region2': (1, 1, 1)}`` (if
-        the parameter is defined "per region") or ``discretisedfield.Field`` is
-        passed.
+        dictionary or ``discretisedfield.Field`` is passed.
 
-        **Note**: For time-dependent strain using ``transform_script``, these
-        define the base (reference) strain that is transformed at each time step.
+        **Note**: For time-dependent strain (``func``), these define the
+        initial strain at t=0. The time evolution is determined by ``func(t)``.
 
     e_diag_files/e_offdiag_files : list of str, optional
 
         List of paths to OVf files containing the diagonal/off-diagonal strain
-        components for each stage. The number of files determines the number
-        of stages. Only one of (``e_diag``, ``e_diag_files``) should be specified.
+        components for each stage (stage-based mode). The number of files
+        determines the number of stages. Mutually exclusive with ``func``.
 
     stage_count : int, optional
 
         Number of stages for stage-based strain. If not specified, it is
         inferred from the length of ``e_diag_files``.
 
-    transform_type : {'identity', 'diagonal', 'symmetric', 'general'}, optional
+    func : callable, optional
 
-        Type of transformation matrix for ``YY_TransformStageMEL``:
+        Time-dependent function for strain (Zeeman-style interface).
+        Signature: ``func(t)`` where ``t`` is time in seconds.
 
-        - ``'identity'``: no transformation (identity matrix)
-        - ``'diagonal'``: diagonal matrix (6 values: 3 diagonal + 3 time derivatives)
-        - ``'symmetric'``: symmetric matrix (12 values)
-        - ``'general'``: general 3x3 matrix (18 values)
+        Returns
+        -------
+        list of float
+            List of 6 strain values: [e11, e22, e33, e23, e13, e12]
+            for diagonal transform_type, or more values for other types.
+
+        Example
+        -------
+        >>> def strain_func(t):
+        ...     # 1 GHz oscillation with 1e-3 amplitude
+        ...     return [1e-3 * np.sin(2*np.pi*1e9*t)] * 6
 
     transform_script : callable, optional
 
-        Function that returns the transformation matrix values at each time step.
-        The function signature depends on ``transform_script_args``:
+        Alternative to ``func`` (advanced interface). Time-dependent function
+        for strain. Signature and return values same as ``func``.
 
-        - ``func(t)`` → returns 6, 12, or 18 values depending on ``transform_type``
-        - ``func(stage, stage_time, total_time)`` → same return
+    dt : float, optional
 
-        The returned values define the transformation matrix M and its time
-        derivative dM/dt. Strain is transformed as ε' = M·ε·Mᵀ.
+        Time step in seconds for pre-computing strain values (Zeeman-style).
+        Default: 1e-13 (0.1 ps). Smaller values give better resolution but
+        larger MIF files. Must be chosen to resolve the fastest variations
+        in ``func(t)``.
+
+    transform_dt : float, optional
+
+        Alternative to ``dt`` (advanced interface). Time step for pre-computation.
+
+    transform_type : {'diagonal', 'symmetric', 'general'}, optional
+
+        Type of strain representation for time-dependent mode:
+
+        - ``'diagonal'`` (default): 6 values [e11, e22, e33, e23, e13, e12]
+        - ``'symmetric'``: 12 values (symmetric tensor)
+        - ``'general'``: 18 values (full tensor)
 
     transform_script_args : str, optional
 
-        Arguments passed to ``transform_script``. Common values:
+        Arguments passed to ``transform_script``. Default: ``'total_time'``.
+        Common values:
 
         - ``'total_time'``: function receives total simulation time
         - ``'stage_time'``: function receives time within current stage
-        - ``'stage stage_time total_time'``: function receives all three
 
     Examples
     --------
-    1. Defining the magneto-elastic energy term using single values
-       (static strain, ``YY_FixedMEL``).
+    1. Static strain (YY_FixedMEL):
 
-    >>> import micromagneticmodel as mm
-    ...
-    >>> mel = mm.MagnetoElastic(B1=1e7, B2=1e7, e_diag=(1e-3, 1e-3, 1e-3),
+    >>> mel = mm.MagnetoElastic(B1=1e7, B2=1e7,
+    ...                         e_diag=(1e-3, 1e-3, 1e-3),
     ...                         e_offdiag=(0, 0, 0))
 
-    2. Defining the magneto-elastic energy term using dictionary.
+    2. Stage-based strain from OVf files (YY_StageMEL):
 
-    >>> B1 = B2 = {'region1': 1e7, 'region2': 2e7}
-    >>> e_diag = {'region1': (1e-3, 1e-3, 1e-3), 'region2': (2e-3, 2e-3, 2e-3)}
-    >>> e_offdiag = {'region1': (0, 0, 0), 'region2': (0, 0, 0)}
-    >>> mel = mm.MagnetoElastic(B1=B1, B2=B2, e_diag=e_diag,
-    ...                         e_offdiag=e_offdiag)
-
-    3. Defining the magneto-elastic energy term using
-    ``discretisedfield.Field``.
-
-    >>> import discretisedfield as df
-    ...
-    >>> region = df.Region(p1=(0, 0, 0), p2=(5e-9, 5e-9, 5e-9))
-    >>> mesh = df.Mesh(region=region, n=(5, 5, 5))
-    >>> B1 = B2 = df.Field(mesh, nvdim=1, value=1e6)
-    >>> e_diag = df.Field(mesh, nvdim=3, value=(1e-3, 1e-3, 1e-3))
-    >>> mel = mm.MagnetoElastic(B1=B1, B2=B2, e_diag=e_diag,
-    ...                         e_offdiag=(0, 0, 0))
-
-    4. Defining stage-based time-dependent strain (``YY_StageMEL``).
-
-    >>> e_diag_files = ['strain_0.ovf', 'strain_1.ovf', 'strain_2.ovf']
-    >>> e_offdiag_files = ['strain_off_0.ovf', 'strain_off_1.ovf', 'strain_off_2.ovf']
-    >>> mel = mm.MagnetoElastic(
+    >>> mel = mm.MagnetoElastic.stage(
     ...     B1=1e7, B2=1e7,
-    ...     e_diag_files=e_diag_files,
-    ...     e_offdiag_files=e_offdiag_files,
-    ...     stage_count=3
+    ...     e_diag_files=['strain_0.ovf', 'strain_1.ovf'],
+    ...     e_offdiag_files=['off_0.ovf', 'off_1.ovf']
     ... )
 
-    5. Defining transformation-based time-dependent strain
-       (``YY_TransformStageMEL``) with oscillating diagonal strain.
+    3. Time-dependent strain with func/dt (YY_TransformStageMEL, Zeeman-style):
 
     >>> import numpy as np
-    >>> def oscillating_transform(t):
-    ...     f = 10e9  # 10 GHz
-    ...     eps = 1e-3
-    ...     coef = eps * np.sin(2 * np.pi * f * t)
-    ...     dcoef = eps * 2 * np.pi * f * np.cos(2 * np.pi * f * t)
-    ...     return [coef, coef, coef, dcoef, dcoef, dcoef]
+    >>> def strain_func(t):
+    ...     f = 1e9  # 1 GHz
+    ...     A = 1e-3  # Amplitude
+    ...     strain = A * np.sin(2 * np.pi * f * t)
+    ...     return [strain, strain, strain, 0, 0, 0]
     >>> mel = mm.MagnetoElastic(
+    ...     B1=1e7, B2=1e7,
+    ...     e_diag=(1, 0.3, 0.3),  # Initial strain
+    ...     e_offdiag=(0, 0, 0),
+    ...     func=strain_func,  # Time dependence
+    ...     dt=1e-13  # 0.1 ps time step
+    ... )
+
+    4. Time-dependent strain with pulse:
+
+    >>> def pulse_strain(t):
+    ...     if t < 1e-9:  # 1 ns pulse
+    ...         return [1e-3, 1e-3, 1e-3, 0, 0, 0]
+    ...     else:
+    ...         return [0, 0, 0, 0, 0, 0]
+    >>> mel = mm.MagnetoElastic(
+    ...     B1=1e7, B2=1e7,
+    ...     e_diag=(0, 0, 0),
+    ...     e_offdiag=(0, 0, 0),
+    ...     func=pulse_strain,
+    ...     dt=1e-12
+    ... )
+
+    5. Using transform() factory method:
+
+    >>> mel = mm.MagnetoElastic.transform(
     ...     B1=1e7, B2=1e7,
     ...     e_diag=(1, 0.3, 0.3),
     ...     e_offdiag=(0, 0, 0),
-    ...     transform_type='diagonal',
-    ...     transform_script=oscillating_transform,
-    ...     transform_script_args='total_time'
+    ...     func=strain_func,
+    ...     dt=1e-13
     ... )
-
-    6. An attempt to define the magneto-elastic energy term using a wrong
-    value.
-
-    >>> # length-4 e value
-    >>> mel = mm.MagnetoElastic(B1=1e7, B2=2e7, e_diag=(1, 1, 1, 1))
-    Traceback (most recent call last):
-    ...
-    ValueError: ...
 
     See Also
     --------
-    Zeeman : Zeeman energy term with similar time-dependence support
+    Zeeman : Zeeman energy term with similar func/dt interface
+    MagnetoElastic.static : Factory method for static strain
+    MagnetoElastic.stage : Factory method for stage-based strain
+    MagnetoElastic.transform : Factory method for time-dependent strain
     """
 
     _allowed_attributes = [
@@ -184,6 +200,9 @@ class MagnetoElastic(EnergyTerm):
         "transform_type",
         "transform_script",
         "transform_script_args",
+        "transform_dt",
+        "func",  # Like Zeeman - for time-dependent
+        "dt",    # Like Zeeman - for time-dependent
     ]
     _reprlatex = (
         r"B_{1}\sum_{i} m_{i}\epsilon_{ii} + "
@@ -202,8 +221,30 @@ class MagnetoElastic(EnergyTerm):
         transform_type=None,
         transform_script=None,
         transform_script_args=None,
+        transform_dt=None,
+        func=None,  # Like Zeeman - for time-dependent
+        dt=None,    # Like Zeeman - for time-dependent
         **kwargs,
     ):
+        # Handle func/dt like Zeeman (func -> transform_script, dt -> transform_dt)
+        if func is not None:
+            if transform_script is not None:
+                raise ValueError(
+                    "Cannot specify both 'func' and 'transform_script'. "
+                    "Use 'func' for simple time-dependence (like Zeeman) or "
+                    "'transform_script' for advanced usage."
+                )
+            transform_script = func
+        
+        if dt is not None:
+            if transform_dt is not None:
+                raise ValueError(
+                    "Cannot specify both 'dt' and 'transform_dt'. "
+                    "Use 'dt' for simple time-dependence (like Zeeman) or "
+                    "'transform_dt' for advanced usage."
+                )
+            transform_dt = dt
+        
         # Validate that only one strain specification method is used
         has_static = e_diag is not None or e_offdiag is not None
         has_files = e_diag_files is not None or e_offdiag_files is not None
@@ -254,11 +295,12 @@ class MagnetoElastic(EnergyTerm):
                 )
             if transform_script_args is None:
                 transform_script_args = "total_time"
-            if e_diag is None or e_offdiag is None:
-                raise ValueError(
-                    "For transformation-based strain, both e_diag and "
-                    "e_offdiag (base strain) must be specified."
-                )
+            # NOTE: e_diag/e_offdiag are OPTIONAL for transform mode
+            # - If provided: Matrix transformation mode (future enhancement)
+            # - If not provided: Direct substitution mode (current)
+            # Set defaults for type validation
+            e_diag = e_diag if e_diag is not None else (0, 0, 0)
+            e_offdiag = e_offdiag if e_offdiag is not None else (0, 0, 0)
 
         # Check for conflicting parameters (transform + files)
         if has_transform and has_files:
@@ -288,32 +330,42 @@ class MagnetoElastic(EnergyTerm):
         object.__setattr__(self, 'transform_type', transform_type)
         object.__setattr__(self, 'transform_script', transform_script)
         object.__setattr__(self, 'transform_script_args', transform_script_args)
+        object.__setattr__(self, 'transform_dt', transform_dt)
 
     @classmethod
     def static(cls, B1, B2, e_diag, e_offdiag, **kwargs):
         """Create static magneto-elastic energy term (YY_FixedMEL).
 
+        Use this method for time-independent (constant) strain.
+
         Parameters
         ----------
         B1, B2 : numbers.Real, dict, discretisedfield.Field
-            Magneto-elastic coefficients.
+            Magneto-elastic coefficients in J/m³.
         e_diag, e_offdiag : (3,) array_like, dict, discretisedfield.Field
-            Diagonal and off-diagonal strain components.
+            Diagonal and off-diagonal strain components (constant in time).
         **kwargs
             Additional keyword arguments passed to ``MagnetoElastic``.
 
         Returns
         -------
         MagnetoElastic
-            Static magneto-elastic energy term.
+            Static magneto-elastic energy term (YY_FixedMEL).
 
         Examples
         --------
+        Constant strain:
+
         >>> mel = mm.MagnetoElastic.static(
         ...     B1=1e7, B2=1e7,
         ...     e_diag=(1e-3, 1e-3, 1e-3),
         ...     e_offdiag=(0, 0, 0)
         ... )
+
+        See Also
+        --------
+        MagnetoElastic.stage : Stage-based strain from OVf files
+        MagnetoElastic.transform : Time-dependent strain with func/dt
         """
         return cls(B1=B1, B2=B2, e_diag=e_diag, e_offdiag=e_offdiag, **kwargs)
 
@@ -323,12 +375,16 @@ class MagnetoElastic(EnergyTerm):
     ):
         """Create stage-based magneto-elastic energy term (YY_StageMEL).
 
+        Use this method for strain that changes between stages (coarse time resolution).
+        Each OVf file contains the strain distribution for one stage.
+
         Parameters
         ----------
         B1, B2 : numbers.Real, dict, discretisedfield.Field
-            Magneto-elastic coefficients.
+            Magneto-elastic coefficients in J/m³.
         e_diag_files, e_offdiag_files : list of str
             Lists of paths to OVf files containing strain components for each stage.
+            The number of files determines the number of stages.
         stage_count : int, optional
             Number of stages. If not specified, inferred from file list length.
         **kwargs
@@ -337,16 +393,29 @@ class MagnetoElastic(EnergyTerm):
         Returns
         -------
         MagnetoElastic
-            Stage-based magneto-elastic energy term.
+            Stage-based magneto-elastic energy term (YY_StageMEL).
 
         Examples
         --------
+        Strain from OVf files:
+
         >>> mel = mm.MagnetoElastic.stage(
         ...     B1=1e7, B2=1e7,
-        ...     e_diag_files=['strain_0.ovf', 'strain_1.ovf'],
-        ...     e_offdiag_files=['off_0.ovf', 'off_1.ovf'],
-        ...     stage_count=2
+        ...     e_diag_files=['strain_0.ovf', 'strain_1.ovf', 'strain_2.ovf'],
+        ...     e_offdiag_files=['off_0.ovf', 'off_1.ovf', 'off_2.ovf'],
+        ...     stage_count=3
         ... )
+
+        Note
+        ----
+        For stage-based strain with Python callable (called each stage),
+        use ``MagnetoElastic`` directly with ``e_diag_script`` and
+        ``e_offdiag_script`` parameters.
+
+        See Also
+        --------
+        MagnetoElastic.static : Static strain
+        MagnetoElastic.transform : Time-dependent strain with func/dt
         """
         return cls(
             B1=B1,
@@ -362,50 +431,127 @@ class MagnetoElastic(EnergyTerm):
         cls,
         B1,
         B2,
-        e_diag,
-        e_offdiag,
-        transform_script,
+        e_diag=None,
+        e_offdiag=None,
+        transform_script=None,
         transform_type="diagonal",
         transform_script_args="total_time",
+        transform_dt=None,
+        func=None,
+        dt=None,
         **kwargs,
     ):
-        """Create transformation-based magneto-elastic energy term (YY_TransformStageMEL).
+        """Create time-dependent magneto-elastic energy term (YY_TransformStageMEL).
+
+        Use this method for strain that varies continuously with time (fine time resolution).
+        Analogous to ``Zeeman(func=..., dt=...)`` interface.
+
+        The strain function returns **full strain values** at each time step
+        (direct substitution), not a transformation matrix.
 
         Parameters
         ----------
         B1, B2 : numbers.Real, dict, discretisedfield.Field
-            Magneto-elastic coefficients.
-        e_diag, e_offdiag : (3,) array_like, dict, discretisedfield.Field
-            Base (reference) strain components.
-        transform_script : callable
-            Function returning transformation matrix values.
-        transform_type : {'identity', 'diagonal', 'symmetric', 'general'}
-            Type of transformation matrix.
+            Magneto-elastic coefficients in J/m³.
+        e_diag, e_offdiag : (3,) array_like, optional
+            Initial strain components at t=0. Optional for time-dependent mode.
+        transform_script : callable, optional
+            Time-dependent function returning strain values.
+            Signature: ``func(t)`` → ``[e11, e22, e33, e23, e13, e12]``
+        transform_type : {'diagonal', 'symmetric', 'general'}, optional
+            Type of strain representation (default: 'diagonal').
         transform_script_args : str, optional
-            Arguments passed to transform_script (default: 'total_time').
+            Arguments for transform_script (default: 'total_time').
+        transform_dt : float, optional
+            Time step for pre-computation in seconds (default: 1e-13 = 0.1 ps).
+        func : callable, optional
+            Zeeman-style interface: alternative to ``transform_script``.
+        dt : float, optional
+            Zeeman-style interface: alternative to ``transform_dt``.
         **kwargs
             Additional keyword arguments passed to ``MagnetoElastic``.
 
         Returns
         -------
         MagnetoElastic
-            Transformation-based magneto-elastic energy term.
+            Time-dependent magneto-elastic energy term (YY_TransformStageMEL).
 
         Examples
         --------
+        1. Harmonic oscillation (Zeeman-style with func/dt):
+
         >>> import numpy as np
-        >>> def oscillating(t):
-        ...     coef = 1e-3 * np.sin(2 * np.pi * 10e9 * t)
-        ...     dcoef = 1e-3 * 2 * np.pi * 10e9 * np.cos(2 * np.pi * 10e9 * t)
-        ...     return [coef, coef, coef, dcoef, dcoef, dcoef]
+        >>> def strain_func(t):
+        ...     f = 1e9  # 1 GHz
+        ...     A = 1e-3
+        ...     strain = A * np.sin(2 * np.pi * f * t)
+        ...     return [strain, strain, strain, 0, 0, 0]
         >>> mel = mm.MagnetoElastic.transform(
         ...     B1=1e7, B2=1e7,
         ...     e_diag=(1, 0.3, 0.3),
         ...     e_offdiag=(0, 0, 0),
-        ...     transform_script=oscillating,
-        ...     transform_type='diagonal'
+        ...     func=strain_func,  # Like Zeeman!
+        ...     dt=1e-13  # 0.1 ps
         ... )
+
+        2. Pulse strain:
+
+        >>> def pulse_strain(t):
+        ...     if t < 1e-9:
+        ...         return [1e-3, 1e-3, 1e-3, 0, 0, 0]
+        ...     else:
+        ...         return [0, 0, 0, 0, 0, 0]
+        >>> mel = mm.MagnetoElastic.transform(
+        ...     B1=1e7, B2=1e7,
+        ...     func=pulse_strain,
+        ...     dt=1e-12
+        ... )
+
+        3. Using transform_script (advanced interface):
+
+        >>> mel = mm.MagnetoElastic.transform(
+        ...     B1=1e7, B2=1e7,
+        ...     transform_script=strain_func,
+        ...     transform_dt=1e-13
+        ... )
+
+        Note
+        ----
+        **Direct substitution mode (current implementation):**
+        ``func(t)`` returns full strain values that are directly substituted
+        into the energy calculation. This is different from matrix
+        transformation where ``e_final = M × e_base × Mᵀ``.
+
+        See Also
+        --------
+        MagnetoElastic.static : Static strain
+        MagnetoElastic.stage : Stage-based strain from OVf files
+        Zeeman : Zeeman energy with similar func/dt interface
         """
+        # Validate that either func or transform_script is provided
+        if func is None and transform_script is None:
+            raise ValueError(
+                "Either 'func' or 'transform_script' must be specified "
+                "for time-dependent MEL."
+            )
+
+        # Handle func/dt like Zeeman
+        if func is not None:
+            if transform_script is not None:
+                raise ValueError(
+                    "Cannot specify both 'func' and 'transform_script'. "
+                    "Use 'func' for Zeeman-style interface or 'transform_script'."
+                )
+            transform_script = func
+
+        if dt is not None:
+            if transform_dt is not None:
+                raise ValueError(
+                    "Cannot specify both 'dt' and 'transform_dt'. "
+                    "Use 'dt' for Zeeman-style interface or 'transform_dt'."
+                )
+            transform_dt = dt
+
         return cls(
             B1=B1,
             B2=B2,
@@ -414,6 +560,7 @@ class MagnetoElastic(EnergyTerm):
             transform_type=transform_type,
             transform_script=transform_script,
             transform_script_args=transform_script_args,
+            transform_dt=transform_dt,
             **kwargs,
         )
 
