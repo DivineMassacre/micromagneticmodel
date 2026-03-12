@@ -1,3 +1,4 @@
+import collections
 import collections.abc
 
 import discretisedfield as df
@@ -147,6 +148,31 @@ class MagnetoElastic(EnergyTerm):
         - ``'total_time'``: function receives total simulation time
         - ``'stage_time'``: function receives time within current stage
 
+    tcl_strings : dict, optional
+
+        Dictionary of ``tcl`` strings to be included into the ``mif`` file for
+        more control over specific time-dependencies. The dictionary should
+        contain the key ``script`` with Tcl code that returns strain values
+        or transformation matrix elements. This is analogous to the
+        ``tcl_strings`` parameter in ``Zeeman``.
+
+        Required key:
+
+        - ``script``: Tcl code that returns a list of 6 values
+          ``[e11, e22, e33, e23, e13, e12]`` for diagonal type.
+
+        Optional keys (for advanced usage):
+
+        - ``energy``: Energy expression
+        - ``type``: Transform type (default: 'diagonal')
+        - ``script_args``: Script arguments
+        - ``script_name``: Script name
+
+        Refer to the OOMMF documentation for more details on YY_TransformStageMEL.
+
+        Note: When using ``tcl_strings``, you must also specify
+        ``transform_type`` (e.g., ``transform_type='diagonal'``).
+
     Examples
     --------
     1. Static strain (YY_FixedMEL):
@@ -211,6 +237,20 @@ class MagnetoElastic(EnergyTerm):
     ...     transform_type='diagonal'
     ... )
 
+    7. Using tcl_strings for advanced control:
+
+    >>> tcl_script = '''
+    ...     set idx [expr {int($total_time / 1e-13)}]
+    ...     return [list 1e-3 1e-3 1e-3 0 0 0]
+    ... '''
+    >>> mel = mm.MagnetoElastic(
+    ...     B1=1e7, B2=1e7,
+    ...     e_diag=(0, 0, 0),
+    ...     e_offdiag=(0, 0, 0),
+    ...     tcl_strings={'script': tcl_script},
+    ...     transform_type='diagonal'  # Required!
+    ... )
+
     See Also
     --------
     Zeeman : Zeeman energy term with similar func/dt interface
@@ -233,6 +273,7 @@ class MagnetoElastic(EnergyTerm):
         "transform_dt",
         "func",  # Like Zeeman - for time-dependent
         "dt",    # Like Zeeman - for time-dependent
+        "tcl_strings",  # Like Zeeman - for advanced tcl control
     ]
     _reprlatex = (
         r"B_{1}\sum_{i} m_{i}\epsilon_{ii} + "
@@ -254,6 +295,7 @@ class MagnetoElastic(EnergyTerm):
         transform_dt=None,
         func=None,  # Like Zeeman - for time-dependent
         dt=None,    # Like Zeeman - for time-dependent
+        tcl_strings=None,  # Like Zeeman - for advanced tcl control
         **kwargs,
     ):
         # Handle func/dt like Zeeman (func -> transform_script, dt -> transform_dt)
@@ -361,6 +403,7 @@ class MagnetoElastic(EnergyTerm):
         object.__setattr__(self, 'transform_script', transform_script)
         object.__setattr__(self, 'transform_script_args', transform_script_args)
         object.__setattr__(self, 'transform_dt', transform_dt)
+        object.__setattr__(self, 'tcl_strings', tcl_strings)
 
     @classmethod
     def static(cls, B1, B2, e_diag, e_offdiag, **kwargs):
@@ -469,6 +512,7 @@ class MagnetoElastic(EnergyTerm):
         transform_dt=None,
         func=None,
         dt=None,
+        tcl_strings=None,
         **kwargs,
     ):
         """Create time-dependent magneto-elastic energy term (YY_TransformStageMEL).
@@ -514,6 +558,9 @@ class MagnetoElastic(EnergyTerm):
             Zeeman-style interface: alternative to ``transform_script``.
         dt : float, optional
             Zeeman-style interface: alternative to ``transform_dt``.
+        tcl_strings : dict, optional
+            Dictionary of tcl strings for advanced control. Must contain
+            'script' key with Tcl code. Requires transform_type to be set.
         **kwargs
             Additional keyword arguments passed to ``MagnetoElastic``.
 
@@ -565,16 +612,26 @@ class MagnetoElastic(EnergyTerm):
         ...     dt=1e-12
         ... )
 
+        4. Using tcl_strings (advanced control):
+
+        >>> tcl_script = 'return [list 1e-3 1e-3 1e-3 0 0 0]'
+        >>> mel = mm.MagnetoElastic.transform(
+        ...     B1=1e7, B2=1e7,
+        ...     e_diag=(1e-3, 1e-3, 1e-3),
+        ...     tcl_strings={'script': tcl_script},
+        ...     transform_type='diagonal'
+        ... )
+
         See Also
         --------
         MagnetoElastic.static : Static strain
         MagnetoElastic.stage : Stage-based strain from OVf files
         Zeeman : Zeeman energy with similar func/dt interface
         """
-        # Validate that either func or transform_script is provided
-        if func is None and transform_script is None:
+        # Validate that at least one of func, transform_script, or tcl_strings is provided
+        if func is None and transform_script is None and tcl_strings is None:
             raise ValueError(
-                "Either 'func' or 'transform_script' must be specified "
+                "Either 'func', 'transform_script', or 'tcl_strings' must be specified "
                 "for time-dependent MEL."
             )
 
@@ -604,13 +661,14 @@ class MagnetoElastic(EnergyTerm):
             transform_script=transform_script,
             transform_script_args=transform_script_args,
             transform_dt=transform_dt,
+            tcl_strings=tcl_strings,
             **kwargs,
         )
 
     @property
     def _mel_class(self):
         """Return the OOMMF class name for this magneto-elastic term."""
-        if self.transform_script is not None:
+        if self.transform_script is not None or self.tcl_strings is not None:
             return "YY_TransformStageMEL"
         elif self.e_diag_files is not None:
             return "YY_StageMEL"

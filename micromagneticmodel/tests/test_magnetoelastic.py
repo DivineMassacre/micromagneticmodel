@@ -280,3 +280,34 @@ class TestMagnetoElasticValidation:
             transform_script=lambda t: [1] * 6,
         )
         assert "MagnetoElastic" in repr(mel)
+
+    def test_tcl_strings_parameter(self):
+        """Test tcl_strings parameter for advanced control."""
+        tcl_script = "set idx [expr {int($total_time / 1e-13)}]"
+        mel = mm.MagnetoElastic(
+            B1=1e7,
+            B2=1e7,
+            e_diag=(0, 0, 0),
+            e_offdiag=(0, 0, 0),
+            tcl_strings={'script': tcl_script},
+        )
+        assert mel.tcl_strings is not None
+        assert mel.tcl_strings['script'] == tcl_script
+        assert mel._mel_class == "YY_TransformStageMEL"  # tcl_strings triggers transform mode
+
+
+class TestMagnetoElasticTransformTclStrings:
+    """Tests for tcl_strings support in transform mode."""
+
+    def test_transform_with_tcl_strings(self):
+        """Test transform() with tcl_strings parameter."""
+        tcl_script = "return [list 1e-3 1e-3 1e-3 0 0 0]"
+        mel = mm.MagnetoElastic.transform(
+            B1=1e7,
+            B2=1e7,
+            e_diag=(1e-3, 1e-3, 1e-3),
+            e_offdiag=(0, 0, 0),
+            tcl_strings={'script': tcl_script},
+        )
+        assert mel.tcl_strings is not None
+        assert mel.tcl_strings['script'] == tcl_script
