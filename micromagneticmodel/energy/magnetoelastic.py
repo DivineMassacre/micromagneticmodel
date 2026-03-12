@@ -33,8 +33,14 @@ class MagnetoElastic(EnergyTerm):
 
     3. **Time-dependent strain** (YY_TransformStageMEL): specify ``func``
        (or ``transform_script``) and ``dt`` (or ``transform_dt``) for
-       strain that varies continuously with time. The function returns
-       full strain values at each time step (direct substitution).
+       strain that varies continuously with time. Two sub-modes are supported:
+
+       a) **Direct substitution** (default): ``func(t)`` returns full strain
+          values [e11, e22, e33, e23, e13, e12]. Use without ``e_diag``/``e_offdiag``.
+
+       b) **Matrix transformation**: ``func(t)`` returns transformation matrix
+          elements M(t), and final strain is computed as
+          e_final = M(t) × e_base × M(t)ᵀ. Use with ``e_diag``/``e_offdiag``.
 
     Parameters
     ----------
@@ -61,8 +67,14 @@ class MagnetoElastic(EnergyTerm):
         parameter is defined. For a spatially varying parameter, either a
         dictionary or ``discretisedfield.Field`` is passed.
 
-        **Note**: For time-dependent strain (``func``), these define the
-        initial strain at t=0. The time evolution is determined by ``func(t)``.
+        **Note**: For time-dependent strain:
+
+        - **Direct substitution mode** (without ``e_diag``/``e_offdiag``):
+          These are ignored; ``func(t)`` returns full strain values.
+
+        - **Matrix transformation mode** (with ``e_diag``/``e_offdiag``):
+          These define the base strain e_base, and ``func(t)`` returns
+          transformation matrix M(t) for e_final = M(t) × e_base × M(t)ᵀ.
 
     e_diag_files/e_offdiag_files : list of str, optional
 
@@ -80,11 +92,22 @@ class MagnetoElastic(EnergyTerm):
         Time-dependent function for strain (Zeeman-style interface).
         Signature: ``func(t)`` where ``t`` is time in seconds.
 
+        The return value and interpretation depend on whether ``e_diag``/
+        ``e_offdiag`` are provided:
+
+        - **Direct substitution mode** (without ``e_diag``/``e_offdiag``):
+          Returns full strain values [e11, e22, e33, e23, e13, e12].
+
+        - **Matrix transformation mode** (with ``e_diag``/``e_offdiag``):
+          Returns transformation matrix elements M(t). For ``transform_type=
+          'diagonal'``, returns [M11, M22, M33, dM11, dM22, dM33] where M
+          scales the base strain: e_final_ii = M_ii × e_base_ii.
+
         Returns
         -------
         list of float
-            List of 6 strain values: [e11, e22, e33, e23, e13, e12]
-            for diagonal transform_type, or more values for other types.
+            List of 6 strain values (direct substitution) or 6-18 matrix
+            elements (matrix transformation) depending on ``transform_type``.
 
         Example
         -------
@@ -140,7 +163,7 @@ class MagnetoElastic(EnergyTerm):
     ...     e_offdiag_files=['off_0.ovf', 'off_1.ovf']
     ... )
 
-    3. Time-dependent strain with func/dt (YY_TransformStageMEL, Zeeman-style):
+    3. Time-dependent strain: Direct substitution mode (YY_TransformStageMEL):
 
     >>> import numpy as np
     >>> def strain_func(t):
@@ -150,35 +173,42 @@ class MagnetoElastic(EnergyTerm):
     ...     return [strain, strain, strain, 0, 0, 0]
     >>> mel = mm.MagnetoElastic(
     ...     B1=1e7, B2=1e7,
-    ...     e_diag=(1, 0.3, 0.3),  # Initial strain
-    ...     e_offdiag=(0, 0, 0),
-    ...     func=strain_func,  # Time dependence
+    ...     func=strain_func,  # Returns full strain values
     ...     dt=1e-13  # 0.1 ps time step
     ... )
 
-    4. Time-dependent strain with pulse:
+    4. Time-dependent strain: Matrix transformation mode:
 
-    >>> def pulse_strain(t):
-    ...     if t < 1e-9:  # 1 ns pulse
-    ...         return [1e-3, 1e-3, 1e-3, 0, 0, 0]
-    ...     else:
-    ...         return [0, 0, 0, 0, 0, 0]
+    >>> def transform_matrix(t):
+    ...     # Scaling matrix M(t) for diagonal transformation
+    ...     m = 1 + 1e-3 * np.sin(2 * np.pi * 1e9 * t)
+    ...     dm = 1e-3 * 2 * np.pi * 1e9 * np.cos(2 * np.pi * 1e9 * t)
+    ...     return [m, m, m, dm, dm, dm]  # M11, M22, M33, dM11, dM22, dM33
     >>> mel = mm.MagnetoElastic(
     ...     B1=1e7, B2=1e7,
-    ...     e_diag=(0, 0, 0),
+    ...     e_diag=(1e-3, 1e-3, 1e-3),  # Base strain e_base
     ...     e_offdiag=(0, 0, 0),
-    ...     func=pulse_strain,
-    ...     dt=1e-12
+    ...     func=transform_matrix,  # Returns M(t)
+    ...     dt=1e-13,
+    ...     transform_type='diagonal'  # e_final_ii = M_ii * e_base_ii
     ... )
 
-    5. Using transform() factory method:
+    5. Using transform() factory method (direct substitution):
 
     >>> mel = mm.MagnetoElastic.transform(
     ...     B1=1e7, B2=1e7,
-    ...     e_diag=(1, 0.3, 0.3),
-    ...     e_offdiag=(0, 0, 0),
     ...     func=strain_func,
     ...     dt=1e-13
+    ... )
+
+    6. Using transform() factory method (matrix transformation):
+
+    >>> mel = mm.MagnetoElastic.transform(
+    ...     B1=1e7, B2=1e7,
+    ...     e_diag=(1e-3, 1e-3, 1e-3),  # Base strain
+    ...     func=transform_matrix,
+    ...     dt=1e-13,
+    ...     transform_type='diagonal'
     ... )
 
     See Also
@@ -446,20 +476,36 @@ class MagnetoElastic(EnergyTerm):
         Use this method for strain that varies continuously with time (fine time resolution).
         Analogous to ``Zeeman(func=..., dt=...)`` interface.
 
-        The strain function returns **full strain values** at each time step
-        (direct substitution), not a transformation matrix.
+        Two modes are available:
+
+        1. **Direct substitution**: ``func(t)`` returns full strain values
+           [e11, e22, e33, e23, e13, e12]. Use without ``e_diag``/``e_offdiag``.
+
+        2. **Matrix transformation**: ``func(t)`` returns transformation matrix
+           elements M(t), and final strain is computed as
+           e_final = M(t) × e_base × M(t)ᵀ. Use with ``e_diag``/``e_offdiag``.
 
         Parameters
         ----------
         B1, B2 : numbers.Real, dict, discretisedfield.Field
             Magneto-elastic coefficients in J/m³.
         e_diag, e_offdiag : (3,) array_like, optional
-            Initial strain components at t=0. Optional for time-dependent mode.
+            Base strain components for matrix transformation mode.
+            For direct substitution mode, leave as None.
         transform_script : callable, optional
-            Time-dependent function returning strain values.
-            Signature: ``func(t)`` → ``[e11, e22, e33, e23, e13, e12]``
+            Time-dependent function. Returns:
+
+            - Direct substitution: ``[e11, e22, e33, e23, e13, e12]``
+            - Matrix transformation: ``[M11, M22, M33, dM11, dM22, dM33]``
+              for diagonal type
+
         transform_type : {'diagonal', 'symmetric', 'general'}, optional
             Type of strain representation (default: 'diagonal').
+
+            - ``'diagonal'``: 6 values (direct) or 6 matrix elements [M11, M22, M33, dM11, dM22, dM33]
+            - ``'symmetric'``: 12 values
+            - ``'general'``: 18 values
+
         transform_script_args : str, optional
             Arguments for transform_script (default: 'total_time').
         transform_dt : float, optional
@@ -478,7 +524,7 @@ class MagnetoElastic(EnergyTerm):
 
         Examples
         --------
-        1. Harmonic oscillation (Zeeman-style with func/dt):
+        1. Direct substitution mode (full strain values):
 
         >>> import numpy as np
         >>> def strain_func(t):
@@ -488,13 +534,25 @@ class MagnetoElastic(EnergyTerm):
         ...     return [strain, strain, strain, 0, 0, 0]
         >>> mel = mm.MagnetoElastic.transform(
         ...     B1=1e7, B2=1e7,
-        ...     e_diag=(1, 0.3, 0.3),
-        ...     e_offdiag=(0, 0, 0),
-        ...     func=strain_func,  # Like Zeeman!
+        ...     func=strain_func,  # Returns full strain
         ...     dt=1e-13  # 0.1 ps
         ... )
 
-        2. Pulse strain:
+        2. Matrix transformation mode (scaling matrix):
+
+        >>> def transform_matrix(t):
+        ...     m = 1 + 1e-3 * np.sin(2 * np.pi * 1e9 * t)
+        ...     dm = 1e-3 * 2 * np.pi * 1e9 * np.cos(2 * np.pi * 1e9 * t)
+        ...     return [m, m, m, dm, dm, dm]  # M11, M22, M33, dM11, dM22, dM33
+        >>> mel = mm.MagnetoElastic.transform(
+        ...     B1=1e7, B2=1e7,
+        ...     e_diag=(1e-3, 1e-3, 1e-3),  # Base strain
+        ...     func=transform_matrix,  # Returns M(t)
+        ...     dt=1e-13,
+        ...     transform_type='diagonal'  # e_final_ii = M_ii * e_base_ii
+        ... )
+
+        3. Pulse strain (direct substitution):
 
         >>> def pulse_strain(t):
         ...     if t < 1e-9:
@@ -506,21 +564,6 @@ class MagnetoElastic(EnergyTerm):
         ...     func=pulse_strain,
         ...     dt=1e-12
         ... )
-
-        3. Using transform_script (advanced interface):
-
-        >>> mel = mm.MagnetoElastic.transform(
-        ...     B1=1e7, B2=1e7,
-        ...     transform_script=strain_func,
-        ...     transform_dt=1e-13
-        ... )
-
-        Note
-        ----
-        **Direct substitution mode (current implementation):**
-        ``func(t)`` returns full strain values that are directly substituted
-        into the energy calculation. This is different from matrix
-        transformation where ``e_final = M × e_base × Mᵀ``.
 
         See Also
         --------

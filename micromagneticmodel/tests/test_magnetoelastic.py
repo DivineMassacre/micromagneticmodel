@@ -193,16 +193,43 @@ class TestMagnetoElasticTransform:
                 transform_type="invalid_type",
             )
 
-    def test_transform_missing_base_strain(self):
-        """Test that missing base strain raises an error."""
-        with pytest.raises(ValueError, match="base strain"):
-            mm.MagnetoElastic.transform(
-                B1=1e7,
-                B2=1e7,
-                e_diag=None,  # Missing
-                e_offdiag=(0, 0, 0),
-                transform_script=lambda t: [1] * 6,
-            )
+    def test_transform_direct_substitution_no_base_strain(self):
+        """Test direct substitution mode: func without e_diag/e_offdiag.
+
+        When only transform_script is provided (without e_diag/e_offdiag),
+        the function returns full strain values (direct substitution mode).
+        """
+        mel = mm.MagnetoElastic.transform(
+            B1=1e7,
+            B2=1e7,
+            e_diag=None,  # Not needed for direct substitution
+            e_offdiag=None,
+            transform_script=lambda t: [1e-3, 1e-3, 1e-3, 0, 0, 0],
+        )
+        assert mel._mel_class == "YY_TransformStageMEL"
+        assert mel.transform_script is not None
+        # e_diag/e_offdiag should be set to defaults
+        assert mel.e_diag == (0, 0, 0)
+        assert mel.e_offdiag == (0, 0, 0)
+
+    def test_transform_matrix_mode_with_base_strain(self):
+        """Test matrix transformation mode: func + e_diag/e_offdiag.
+
+        When both transform_script and e_diag/e_offdiag are provided,
+        the function returns transformation matrix M(t), and final strain
+        is computed as: e_final = M(t) × e_base × M(t)ᵀ
+        """
+        mel = mm.MagnetoElastic.transform(
+            B1=1e7,
+            B2=1e7,
+            e_diag=(1e-3, 1e-3, 1e-3),  # Base strain
+            e_offdiag=(0, 0, 0),
+            transform_script=lambda t: [1.0, 1.0, 1.0, 0, 0, 0],  # M(t)
+        )
+        assert mel._mel_class == "YY_TransformStageMEL"
+        assert mel.transform_script is not None
+        assert mel.e_diag == (1e-3, 1e-3, 1e-3)  # Base strain set
+        assert mel.e_offdiag == (0, 0, 0)
 
 
 class TestMagnetoElasticValidation:
