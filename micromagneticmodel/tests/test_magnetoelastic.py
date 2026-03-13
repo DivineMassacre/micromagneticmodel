@@ -1,6 +1,7 @@
 import re
 
 import discretisedfield as df
+import numpy as np
 import pytest
 
 import micromagneticmodel as mm
@@ -311,3 +312,133 @@ class TestMagnetoElasticTransformTclStrings:
         )
         assert mel.tcl_strings is not None
         assert mel.tcl_strings['script'] == tcl_script
+
+
+class TestMagnetoElasticSpatialVariation:
+    """Tests for spatially varying MEL parameters."""
+
+    def test_spatially_varying_B1_field(self):
+        """Test spatially varying B1 using discretisedfield.Field."""
+        import discretisedfield as df
+
+        region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(10, 10, 2))
+
+        def B1_func(point):
+            x, y, z = point
+            return 1e7 * (1 + x / 100e-9)  # Gradient from 1e7 to 2e7
+
+        B1_field = df.Field(mesh, nvdim=1, value=B1_func)
+        mel = mm.MagnetoElastic(
+            B1=B1_field,
+            B2=1e7,
+            e_diag=(1e-3, 1e-3, 1e-3),
+            e_offdiag=(0, 0, 0),
+        )
+
+        assert isinstance(mel.B1, df.Field)
+        assert mel.B1.mesh == mesh
+        assert mel.B1.nvdim == 1
+        # Check mean value is approximately 1.5e7
+        assert abs(mel.B1.mean()[0] - 1.5e7) < 1e5
+
+    def test_spatially_varying_e_diag_callable(self):
+        """Test spatially varying e_diag using callable."""
+        import discretisedfield as df
+
+        region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(10, 10, 2))
+
+        def strain_func(point):
+            x, y, z = point
+            # Bending film: strain varies along z
+            return (1e-3 * z / 10e-9, 1e-3 * z / 10e-9, 1e-3 * z / 10e-9)
+
+        e_diag_field = df.Field(mesh, nvdim=3, value=strain_func)
+        mel = mm.MagnetoElastic(
+            B1=1e7,
+            B2=1e7,
+            e_diag=e_diag_field,
+            e_offdiag=(0, 0, 0),
+        )
+
+        assert isinstance(mel.e_diag, df.Field)
+        assert mel.e_diag.mesh == mesh
+        assert mel.e_diag.nvdim == 3
+        # Check mean value
+        mean_strain = mel.e_diag.mean()
+        assert abs(mean_strain[0] - 0.5e-3) < 1e-4
+        assert abs(mean_strain[1] - 0.5e-3) < 1e-4
+        assert abs(mean_strain[2] - 0.5e-3) < 1e-4
+
+    def test_spatially_varying_dict_regions(self):
+        """Test spatially varying parameters using dict (per-region)."""
+        import discretisedfield as df
+
+        region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        subregion1 = df.Region(p1=(0, 0, 0), p2=(50e-9, 100e-9, 10e-9))
+        subregion2 = df.Region(p1=(50e-9, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        mesh = df.Mesh(
+            region=region,
+            n=(20, 10, 2),
+            subregions={'left': subregion1, 'right': subregion2},
+        )
+
+        mel = mm.MagnetoElastic(
+            B1={'left': 1e7, 'right': 2e7, 'default': 1e7},
+            B2=1e7,
+            e_diag=(1e-3, 1e-3, 1e-3),
+            e_offdiag=(0, 0, 0),
+        )
+
+        assert isinstance(mel.B1, dict)
+        assert mel.B1['left'] == 1e7
+        assert mel.B1['right'] == 2e7
+        assert mel.B1['default'] == 1e7
+
+    def test_spatially_varying_B2_field(self):
+        """Test spatially varying B2 using discretisedfield.Field."""
+        import discretisedfield as df
+
+        region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(10, 10, 2))
+
+        def B2_func(point):
+            x, y, z = point
+            return 1e7 * np.sin(np.pi * x / 100e-9)  # Sinusoidal variation
+
+        B2_field = df.Field(mesh, nvdim=1, value=B2_func)
+        mel = mm.MagnetoElastic(
+            B1=1e7,
+            B2=B2_field,
+            e_diag=(1e-3, 1e-3, 1e-3),
+            e_offdiag=(0, 0, 0),
+        )
+
+        assert isinstance(mel.B2, df.Field)
+        assert mel.B2.mesh == mesh
+        assert mel.B2.nvdim == 1
+
+    def test_spatially_varying_e_offdiag_field(self):
+        """Test spatially varying e_offdiag using discretisedfield.Field."""
+        import discretisedfield as df
+
+        region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(10, 10, 2))
+
+        def e_offdiag_func(point):
+            x, y, z = point
+            # Shear strain varying with x
+            return (0, 0, 1e-4 * x / 100e-9)
+
+        e_offdiag_field = df.Field(mesh, nvdim=3, value=e_offdiag_func)
+        mel = mm.MagnetoElastic(
+            B1=1e7,
+            B2=1e7,
+            e_diag=(1e-3, 1e-3, 1e-3),
+            e_offdiag=e_offdiag_field,
+        )
+
+        assert isinstance(mel.e_offdiag, df.Field)
+        assert mel.e_offdiag.mesh == mesh
+        assert mel.e_offdiag.nvdim == 3

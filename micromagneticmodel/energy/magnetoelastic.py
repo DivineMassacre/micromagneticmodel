@@ -264,6 +264,50 @@ class MagnetoElastic(EnergyTerm):
     ...     transform_type='diagonal'  # Required!
     ... )
 
+    8. Spatially varying parameters (discretisedfield.Field):
+
+    >>> import discretisedfield as df
+    >>> # Define mesh first
+    >>> region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+    >>> mesh = df.Mesh(region=region, n=(20, 20, 2))
+    >>> # Gradient in B1 along x-direction
+    >>> def B1_func(point):
+    ...     x, y, z = point
+    ...     return 1e7 * (1 + x / 100e-9)  # From 1e7 to 2e7
+    >>> B1_field = df.Field(mesh, nvdim=1, value=B1_func)
+    >>> mel = mm.MagnetoElastic(
+    ...     B1=B1_field,  # Spatially varying B1
+    ...     B2=1e7,
+    ...     e_diag=(1e-3, 1e-3, 1e-3),
+    ...     e_offdiag=(0, 0, 0)
+    ... )
+
+    9. Spatially varying strain (callable):
+
+    >>> def strain_func(point):
+    ...     x, y, z = point
+    ...     # Bending film: strain varies along z
+    ...     return (1e-3 * z/10e-9, 1e-3 * z/10e-9, 1e-3 * z/10e-9)
+    >>> e_diag_field = df.Field(mesh, nvdim=3, value=strain_func)
+    >>> mel = mm.MagnetoElastic(
+    ...     B1=1e7, B2=1e7,
+    ...     e_diag=e_diag_field,  # Spatially varying strain
+    ...     e_offdiag=(0, 0, 0)
+    ... )
+
+    10. Spatially varying parameters by regions (dict):
+
+    >>> subregion1 = df.Region(p1=(0, 0, 0), p2=(50e-9, 100e-9, 10e-9))
+    >>> subregion2 = df.Region(p1=(50e-9, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+    >>> mesh = df.Mesh(region=region, n=(20, 20, 2),
+    ...                subregions={'left': subregion1, 'right': subregion2})
+    >>> mel = mm.MagnetoElastic(
+    ...     B1={'left': 1e7, 'right': 2e7, 'default': 1e7},  # Per-region B1
+    ...     B2=1e7,
+    ...     e_diag=(1e-3, 1e-3, 1e-3),
+    ...     e_offdiag=(0, 0, 0)
+    ... )
+
     See Also
     --------
     Zeeman : Zeeman energy term with similar func/dt interface
