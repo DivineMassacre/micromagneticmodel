@@ -1,5 +1,6 @@
 import collections
 
+import numpy as np
 import discretisedfield as df
 import ubermagutil as uu
 import ubermagutil.typesystem as ts
@@ -171,6 +172,17 @@ class Zeeman(EnergyTerm):
 
         Default is empty list (no spatiotemporal terms).
 
+    stage_count : int, optional
+
+        Number of stages for spatiotemporal field updates.
+        If None, automatically taken from TimeDriver (parameter n).
+        Default is None.
+
+    dt : numbers.Real, optional
+
+        Time steps in seconds to evaluate callable ``func`` at.
+        Also used for spatiotemporal field updates. Default is 1e-13.
+
     Examples
     --------
     1. Defining the Zeeman energy term using a vector.
@@ -234,7 +246,22 @@ class Zeeman(EnergyTerm):
     ...     mask=lambda x,y,z: -np.sin(k * x)
     ... )
 
-    9. An attempt to define the Zeeman energy term using a wrong value.
+    9. Using built-in harmonic function (quick method).
+
+    >>> zeeman = mm.Zeeman()
+    >>> zeeman.add_harmonic_term(amplitude=1e5, frequency=1e9, mask='cos', k=2*np.pi/100e-9)
+
+    10. Using built-in temporal and spatial functions.
+
+    >>> zeeman = mm.Zeeman()
+    >>> zeeman.add_time_term(
+    ...     func=zeeman.sin,
+    ...     func_kwargs={'amplitude': 1e5, 'frequency': 1e9},
+    ...     mask=zeeman.cos_mask,
+    ...     mask_kwargs={'k': 2*np.pi/100e-9}
+    ... )
+
+    11. An attempt to define the Zeeman energy term using a wrong value.
 
     >>> zeeman = mm.Zeeman(H=(0, -1e7))  # length-2 vector
     Traceback (most recent call last):
@@ -257,14 +284,15 @@ class Zeeman(EnergyTerm):
             List of (func, mask) tuples for spatiotemporal terms.
         stage_count : int, optional
             Number of stages for spatiotemporal field updates.
-            Must match TimeDriver stage_count. Default is 100.
+            If None, automatically taken from TimeDriver (parameter n).
+            Default is None.
         dt : float, optional
             Time step for spatiotemporal field updates (seconds).
             Default is 1e-13 (0.1 ps).
         """
         self.H = H if H is not None else (0, 0, 0)
         self._terms = spatiotemporal_terms if spatiotemporal_terms is not None else []
-        self._stage_count = stage_count if stage_count is not None else 100
+        self._stage_count = stage_count  # None means auto from driver
         self._dt = dt if dt is not None else 1e-13
         super().__init__(**kwargs)
 
@@ -323,6 +351,316 @@ class Zeeman(EnergyTerm):
     def has_time_terms(self):
         """True if there are time-dependent terms."""
         return len(self._terms) > 0
+
+    # ========== ВСТРОЕННЫЕ ВРЕМЕННЫЕ ФУНКЦИИ ==========
+
+    @staticmethod
+    def sin(t, amplitude=1, frequency=1, phase=0):
+        """Sinusoidal temporal function.
+
+        H(t) = amplitude * sin(2*pi*frequency*t + phase)
+
+        Parameters
+        ----------
+        t : float
+            Time (s)
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+        frequency : float, optional
+            Frequency (Hz). Default is 1.
+        phase : float, optional
+            Phase shift (rad). Default is 0.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.sin(2 * np.pi * frequency * t + phase)
+
+    @staticmethod
+    def cos(t, amplitude=1, frequency=1, phase=0):
+        """Cosinusoidal temporal function.
+
+        H(t) = amplitude * cos(2*pi*frequency*t + phase)
+
+        Parameters
+        ----------
+        t : float
+            Time (s)
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+        frequency : float, optional
+            Frequency (Hz). Default is 1.
+        phase : float, optional
+            Phase shift (rad). Default is 0.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.cos(2 * np.pi * frequency * t + phase)
+
+    @staticmethod
+    def constant(t, amplitude=1):
+        """Constant temporal function.
+
+        H(t) = amplitude
+
+        Parameters
+        ----------
+        t : float
+            Time (s)
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude
+
+    @staticmethod
+    def gaussian(t, amplitude=1, center=0, sigma=1e-12):
+        """Gaussian pulse temporal function.
+
+        H(t) = amplitude * exp(-(t-center)^2 / (2*sigma^2))
+
+        Parameters
+        ----------
+        t : float
+            Time (s)
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+        center : float, optional
+            Center of the pulse (s). Default is 0.
+        sigma : float, optional
+            Width of the pulse (s). Default is 1e-12.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.exp(-(t - center)**2 / (2 * sigma**2))
+
+    @staticmethod
+    def exponential(t, amplitude=1, tau=1e-12):
+        """Exponential decay temporal function.
+
+        H(t) = amplitude * exp(-t / tau)
+
+        Parameters
+        ----------
+        t : float
+            Time (s)
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+        tau : float, optional
+            Decay time constant (s). Default is 1e-12.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.exp(-t / tau)
+
+    # ========== ВСТРОЕННЫЕ ПРОСТРАНСТВЕННЫЕ МАСКИ ==========
+
+    @staticmethod
+    def uniform(x, y, z):
+        """Uniform spatial mask (1 everywhere).
+
+        Parameters
+        ----------
+        x, y, z : float
+            Coordinates (m)
+
+        Returns
+        -------
+        float
+            Mask value (always 1.0)
+        """
+        return 1.0
+
+    @staticmethod
+    def cos_mask(x, y, z, k=1, axis='x'):
+        """Cosine spatial mask.
+
+        mask(x,y,z) = cos(k * axis_coord)
+
+        Parameters
+        ----------
+        x, y, z : float
+            Coordinates (m)
+        k : float, optional
+            Wave vector (rad/m). Default is 1.
+        axis : str, optional
+            Axis ('x', 'y', or 'z'). Default is 'x'.
+
+        Returns
+        -------
+        float
+            Mask value
+        """
+        coords = {'x': x, 'y': y, 'z': z}
+        return np.cos(k * coords[axis])
+
+    @staticmethod
+    def sin_mask(x, y, z, k=1, axis='x'):
+        """Sine spatial mask.
+
+        mask(x,y,z) = sin(k * axis_coord)
+
+        Parameters
+        ----------
+        x, y, z : float
+            Coordinates (m)
+        k : float, optional
+            Wave vector (rad/m). Default is 1.
+        axis : str, optional
+            Axis ('x', 'y', or 'z'). Default is 'x'.
+
+        Returns
+        -------
+        float
+            Mask value
+        """
+        coords = {'x': x, 'y': y, 'z': z}
+        return np.sin(k * coords[axis])
+
+    @staticmethod
+    def gaussian_mask(x, y, z, sigma=50e-9, center=(0, 0, 0)):
+        """Gaussian spatial mask.
+
+        mask(x,y,z) = exp(-((x-cx)^2 + (y-cy)^2 + (z-cz)^2) / (2*sigma^2))
+
+        Parameters
+        ----------
+        x, y, z : float
+            Coordinates (m)
+        sigma : float, optional
+            Width of the Gaussian (m). Default is 50e-9.
+        center : tuple, optional
+            Center of the Gaussian (cx, cy, cz) in meters. Default is (0, 0, 0).
+
+        Returns
+        -------
+        float
+            Mask value
+        """
+        dx = x - center[0]
+        dy = y - center[1]
+        dz = z - center[2]
+        return np.exp(-(dx**2 + dy**2 + dz**2) / (2 * sigma**2))
+
+    @staticmethod
+    def step_mask(x, y, z, threshold=0, axis='x'):
+        """Step function spatial mask.
+
+        mask(x,y,z) = 1 if axis_coord > threshold else 0
+
+        Parameters
+        ----------
+        x, y, z : float
+            Coordinates (m)
+        threshold : float, optional
+            Threshold value (m). Default is 0.
+        axis : str, optional
+            Axis ('x', 'y', or 'z'). Default is 'x'.
+
+        Returns
+        -------
+        float
+            Mask value (0 or 1)
+        """
+        coords = {'x': x, 'y': y, 'z': z}
+        return 1.0 if coords[axis] > threshold else 0.0
+
+    # ========== МЕТОД ДЛЯ БЫСТРОГО ДОБАВЛЕНИЯ ==========
+
+    def add_harmonic_term(self, amplitude, frequency, phase=0,
+                          mask='uniform', **mask_kwargs):
+        """Add harmonic (sinusoidal) term with one line.
+
+        The total field contribution is:
+        H_term = amplitude * sin(2*pi*frequency*t + phase) * mask(x,y,z)
+
+        Parameters
+        ----------
+        amplitude : float
+            Field amplitude (A/m)
+        frequency : float
+            Frequency (Hz)
+        phase : float, optional
+            Phase shift (rad). Default is 0.
+        mask : str or callable, optional
+            Spatial mask. Can be:
+
+            - 'uniform': uniform mask (default)
+            - 'cos': cosine mask
+            - 'sin': sine mask
+            - 'gaussian': Gaussian mask
+            - 'step': step function mask
+            - callable: custom mask function
+
+        **mask_kwargs
+            Additional arguments for mask function:
+
+            - For 'cos'/'sin': k (wave vector), axis
+            - For 'gaussian': sigma, center
+            - For 'step': threshold, axis
+
+        Examples
+        --------
+        Simple harmonic field:
+
+        >>> zeeman = mm.Zeeman()
+        >>> zeeman.add_harmonic_term(amplitude=1e5, frequency=1e9)
+
+        Standing wave:
+
+        >>> zeeman.add_harmonic_term(
+        ...     amplitude=1e5,
+        ...     frequency=1e9,
+        ...     mask='cos',
+        ...     k=2*np.pi/100e-9,
+        ...     axis='x'
+        ... )
+
+        Traveling wave (two terms):
+
+        >>> k = 2*np.pi/100e-9
+        >>> zeeman = mm.Zeeman()
+        >>> zeeman.add_harmonic_term(1e5, 1e9, phase=0, mask='sin', k=k, axis='x')
+        >>> zeeman.add_harmonic_term(1e5, 1e9, phase=np.pi/2, mask='cos', k=k, axis='x')
+
+        Gaussian spatial profile:
+
+        >>> zeeman.add_harmonic_term(
+        ...     amplitude=1e5,
+        ...     frequency=1e9,
+        ...     mask='gaussian',
+        ...     sigma=50e-9
+        ... )
+        """
+        func = lambda t: self.sin(t, amplitude=amplitude, frequency=frequency, phase=phase)
+
+        if isinstance(mask, str):
+            mask_funcs = {
+                'uniform': self.uniform,
+                'cos': self.cos_mask,
+                'sin': self.sin_mask,
+                'gaussian': self.gaussian_mask,
+                'step': self.step_mask,
+            }
+            mask_func = mask_funcs.get(mask, self.uniform)
+            mask = lambda x, y, z: mask_func(x, y, z, **mask_kwargs)
+
+        self.add_time_term(func=func, mask=mask)
 
     @property
     def _reprlatex(self):
