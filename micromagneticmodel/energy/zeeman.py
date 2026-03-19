@@ -25,6 +25,10 @@ from .energyterm import EnergyTerm
         ),
         value_descriptor=ts.Typed(expected_type=str),
     ),
+    spatiotemporal_terms=ts.Parameter(
+        descriptor=list,
+        default=[],
+    ),
 )
 class Zeeman(EnergyTerm):
     r"""Zeeman energy term.
@@ -95,6 +99,18 @@ class Zeeman(EnergyTerm):
     ``time_dependence`` and ``tstep`` is easier for the user and should be
     preferred, if possible.
 
+    **Spatiotemporal fields** (H(x,y,z,t)) can be defined using the
+    ``spatiotemporal_terms`` parameter or the :meth:`add_time_term` method.
+    This uses the Oxs_StageZeeman + Oxs_ScriptVectorField approach in OOMMF.
+    The total field is computed as:
+
+    .. math::
+
+        \mathbf{H}(x,y,z,t) = \mathbf{H}_\text{static} + \sum_i f_i(t) \cdot \text{mask}_i(x,y,z)
+
+    where :math:`f_i(t)` is a time-dependent function and :math:`\text{mask}_i(x,y,z)` is
+    an optional spatial mask.
+
     Parameters
     ----------
     H : (3,) array_like, dict, discretisedfield.Field
@@ -135,6 +151,26 @@ class Zeeman(EnergyTerm):
         ``script_name`` refers to what is called ``script`` in the function
         definition on the OOMMF website.
 
+    spatiotemporal_terms : list, optional
+
+        List of ``(func, mask)`` tuples for spatiotemporal field terms.
+        Each tuple defines a time-dependent term where:
+
+        - ``func`` : callable
+            Time-dependent function. Can return:
+
+            - Scalar: ``float`` → ``f(t)`` (multiplied by mask)
+            - Vector: ``float`` → ``(Hx, Hy, Hz)``
+
+        - ``mask`` : callable, dict, or None, optional
+            Spatial mask. Can be:
+
+            - ``None``: uniform mask (1 for all cells)
+            - callable: ``(x, y, z) → scalar`` or ``(Hx, Hy, Hz)``
+            - dict: ``{'region_name': value}`` for regional masks
+
+        Default is empty list (no spatiotemporal terms).
+
     Examples
     --------
     1. Defining the Zeeman energy term using a vector.
@@ -169,7 +205,36 @@ class Zeeman(EnergyTerm):
     ...     return np.exp(-t / t_0)
     >>> zeeman = mm.Zeeman(H=(0, 0, 1e6), func=decay, dt=1e-13)
 
-    6. An attempt to define the Zeeman energy term using a wrong value.
+    6. Defining a spatiotemporal field with uniform time dependence.
+
+    >>> import numpy as np
+    >>> zeeman = mm.Zeeman(H=(1e6, 0, 0))
+    >>> zeeman.add_time_term(lambda t: (1e3 * np.sin(2*np.pi*1e9*t), 0, 0))
+
+    7. Defining a spatiotemporal field with Gaussian spatial mask.
+
+    >>> zeeman = mm.Zeeman()
+    >>> zeeman.add_time_term(
+    ...     func=lambda t: np.sin(2*np.pi*1e9*t),
+    ...     mask=lambda x,y,z: (1e3 * np.exp(-x**2/1e-16), 0, 0)
+    ... )
+
+    8. Defining a traveling wave (two terms).
+
+    >>> H0 = 1e6
+    >>> omega = 2*np.pi * 1e9
+    >>> k = 2*np.pi / 100e-9
+    >>> zeeman = mm.Zeeman()
+    >>> zeeman.add_time_term(
+    ...     func=lambda t: H0 * np.sin(omega * t),
+    ...     mask=lambda x,y,z: np.cos(k * x)
+    ... )
+    >>> zeeman.add_time_term(
+    ...     func=lambda t: H0 * np.cos(omega * t),
+    ...     mask=lambda x,y,z: -np.sin(k * x)
+    ... )
+
+    9. An attempt to define the Zeeman energy term using a wrong value.
 
     >>> zeeman = mm.Zeeman(H=(0, -1e7))  # length-2 vector
     Traceback (most recent call last):
@@ -179,7 +244,85 @@ class Zeeman(EnergyTerm):
     """
 
     # 'wave' is replaced by 'func' (deprecated but kept for compatibility)
-    _allowed_attributes = ["H", "wave", "f", "t0", "func", "dt", "tcl_strings"]
+    _allowed_attributes = ["H", "wave", "f", "t0", "func", "dt", "tcl_strings", "spatiotemporal_terms"]
+
+    def __init__(self, H=None, spatiotemporal_terms=None, stage_count=None, dt=None, **kwargs):
+        """Initialize Zeeman term.
+
+        Parameters
+        ----------
+        H : tuple, list, dict, or discretisedfield.Field, optional
+            Static magnetic field. Default is (0, 0, 0).
+        spatiotemporal_terms : list, optional
+            List of (func, mask) tuples for spatiotemporal terms.
+        stage_count : int, optional
+            Number of stages for spatiotemporal field updates.
+            Must match TimeDriver stage_count. Default is 100.
+        dt : float, optional
+            Time step for spatiotemporal field updates (seconds).
+            Default is 1e-13 (0.1 ps).
+        """
+        self.H = H if H is not None else (0, 0, 0)
+        self._terms = spatiotemporal_terms if spatiotemporal_terms is not None else []
+        self._stage_count = stage_count if stage_count is not None else 100
+        self._dt = dt if dt is not None else 1e-13
+        super().__init__(**kwargs)
+
+    def add_time_term(self, func, mask=None):
+        """Add a time-dependent term to the Zeeman field.
+
+        The total field is: H_total = H_static + Σᵢ [fᵢ(t) × maskᵢ(x,y,z)]
+
+        Parameters
+        ----------
+        func : callable
+            Time-dependent function. Can return:
+
+            - Scalar: ``float`` → f(t) (multiplied by mask)
+            - Vector: ``float`` → (Hx, Hy, Hz)
+
+        mask : callable, dict, or None, optional
+            Spatial mask. Can be:
+
+            - ``None``: uniform mask (1 for all cells)
+            - callable: ``(x, y, z) → scalar`` or ``(Hx, Hy, Hz)``
+            - dict: ``{'region_name': value}`` for regional masks
+
+        Examples
+        --------
+        Uniform time-dependent field:
+
+        >>> zeeman = mm.Zeeman(H=(1e6, 0, 0))
+        >>> zeeman.add_time_term(lambda t: (1e3 * np.sin(2*np.pi*1e9*t), 0, 0))
+
+        With spatial Gaussian mask:
+
+        >>> zeeman.add_time_term(
+        ...     func=lambda t: np.sin(2*np.pi*1e9*t),
+        ...     mask=lambda x,y,z: (1e3 * np.exp(-x**2/1e-16), 0, 0)
+        ... )
+
+        Traveling wave (two terms):
+
+        >>> zeeman.add_time_term(
+        ...     func=lambda t: H0 * np.sin(omega * t),
+        ...     mask=lambda x,y,z: np.cos(k * x)
+        ... )
+        >>> zeeman.add_time_term(
+        ...     func=lambda t: H0 * np.cos(omega * t),
+        ...     mask=lambda x,y,z: -np.sin(k * x)
+        ... )
+        """
+        self._terms.append((func, mask))
+
+    def clear_time_terms(self):
+        """Remove all time-dependent terms."""
+        self._terms = []
+
+    @property
+    def has_time_terms(self):
+        """True if there are time-dependent terms."""
+        return len(self._terms) > 0
 
     @property
     def _reprlatex(self):
