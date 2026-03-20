@@ -95,3 +95,53 @@ class TestZeemanSpatiotemporal:
         assert zeeman.H == (1e6, 0, 0)
         assert zeeman.has_time_terms
         assert len(zeeman._terms) == 1
+
+    def test_add_time_term_validation_func_not_callable(self):
+        """Test validation: func must be callable."""
+        zeeman = mm.Zeeman()
+        with pytest.raises(TypeError, match="func must be callable"):
+            zeeman.add_time_term(func="not a callable")
+
+    def test_add_time_term_validation_mask_invalid(self):
+        """Test validation: mask must be callable or dict."""
+        zeeman = mm.Zeeman()
+        with pytest.raises(TypeError, match="mask must be callable, dict, or None"):
+            zeeman.add_time_term(func=lambda t: 1, mask=123)
+
+    def test_add_time_term_validation_vector_wrong_length(self):
+        """Test validation: vector func must return 3 components."""
+        zeeman = mm.Zeeman()
+        with pytest.raises(ValueError, match="Vector func must return 3 components"):
+            zeeman.add_time_term(func=lambda t: (1, 2))
+
+    def test_add_time_term_validation_return_type(self):
+        """Test validation: func must return float or 3-tuple."""
+        zeeman = mm.Zeeman()
+        with pytest.raises(TypeError, match="func must return scalar float or 3-tuple"):
+            zeeman.add_time_term(func=lambda t: "string")
+
+    def test_add_time_term_with_dict_mask(self):
+        """Test adding term with dict mask (regional)."""
+        zeeman = mm.Zeeman()
+        zeeman.add_time_term(
+            func=lambda t: np.sin(t),
+            mask={'region1': 1.0, 'region2': 0.5}
+        )
+        assert len(zeeman._terms) == 1
+
+    def test_stage_count_none_by_default(self):
+        """Test that stage_count is None by default (auto from driver)."""
+        zeeman = mm.Zeeman()
+        assert zeeman._stage_count is None
+
+    def test_stage_count_explicit(self):
+        """Test explicit stage_count."""
+        zeeman = mm.Zeeman(stage_count=50)
+        assert zeeman._stage_count == 50
+
+    def test_stage_count_with_spatiotemporal_terms(self):
+        """Test stage_count with spatiotemporal terms."""
+        zeeman = mm.Zeeman(stage_count=100, dt=1e-13)
+        zeeman.add_time_term(lambda t: np.sin(t))
+        assert zeeman._stage_count == 100
+        assert zeeman._dt == 1e-13

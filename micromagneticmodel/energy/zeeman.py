@@ -163,6 +163,12 @@ class Zeeman(EnergyTerm):
             - Scalar: ``float`` → ``f(t)`` (multiplied by mask)
             - Vector: ``float`` → ``(Hx, Hy, Hz)``
 
+            .. warning::
+
+               For proper MIF generation, ``func`` must be defined in a ``.py`` file
+               (not in Jupyter notebook or REPL). The function can only use standard
+               math functions (``sin``, ``cos``, ``exp``, ``sqrt``, etc.).
+
         - ``mask`` : callable, dict, or None, optional
             Spatial mask. Can be:
 
@@ -170,18 +176,44 @@ class Zeeman(EnergyTerm):
             - callable: ``(x, y, z) → scalar`` or ``(Hx, Hy, Hz)``
             - dict: ``{'region_name': value}`` for regional masks
 
+            .. warning::
+
+               For proper MIF generation, ``mask`` must be defined in a ``.py`` file
+               (not in notebook/REPL). The mask is **fixed in time** and cannot depend
+               on ``t``.
+
         Default is empty list (no spatiotemporal terms).
+
+        .. seealso::
+
+            :meth:`add_time_term` : Method for adding spatiotemporal terms.
+            :meth:`add_harmonic_term` : Convenience method for harmonic fields.
 
     stage_count : int, optional
 
         Number of stages for spatiotemporal field updates.
-        If None, automatically taken from TimeDriver (parameter n).
-        Default is None.
+        If ``None`` (default), automatically taken from :class:`TimeDriver` 
+        parameter ``n``. This is the recommended usage.
+
+        .. warning::
+
+           The ``stage_count`` in Zeeman must match the number of stages ``n`` 
+           passed to :meth:`TimeDriver.drive()`. If you explicitly set 
+           ``stage_count``, ensure it matches the driver's ``n``.
+
+        Default is ``None``.
 
     dt : numbers.Real, optional
 
-        Time steps in seconds to evaluate callable ``func`` at.
-        Also used for spatiotemporal field updates. Default is 1e-13.
+        Time step for spatiotemporal field updates (seconds).
+        The field is updated every ``dt`` seconds.
+        Default is 1e-13 (0.1 ps).
+
+        .. tip::
+
+           Choose ``dt`` small enough to resolve the fastest temporal variations
+           in your field. As a rule of thumb, use at least 10-20 steps per period
+           of the highest frequency component.
 
     Examples
     --------
@@ -301,6 +333,22 @@ class Zeeman(EnergyTerm):
 
         The total field is: H_total = H_static + Σᵢ [fᵢ(t) × maskᵢ(x,y,z)]
 
+        .. note::
+
+           **Important limitations on custom functions:**
+
+           - ``func`` must be defined in a ``.py`` file (not in Jupyter notebook or REPL)
+             for proper MIF generation. This is required because the converter uses
+             ``inspect.getsource()`` to extract the function body.
+           - ``func`` can only use standard math functions: ``sin``, ``cos``, ``tan``,
+             ``exp``, ``log``, ``sqrt``, ``abs``, ``numpy.*`` equivalents.
+           - ``func`` must be a simple expression or return statement. Complex control
+             flow (if/else, loops) is not supported.
+           - ``mask`` has the same limitations as ``func``, but takes ``(x, y, z)`` arguments.
+           - ``mask`` is **fixed in time** - it cannot depend on ``t``.
+           - For ``add_harmonic_term()``, the parameters are automatically extracted,
+             but using explicit functions in a ``.py`` file is recommended for reliability.
+
         Parameters
         ----------
         func : callable
@@ -309,12 +357,22 @@ class Zeeman(EnergyTerm):
             - Scalar: ``float`` → f(t) (multiplied by mask)
             - Vector: ``float`` → (Hx, Hy, Hz)
 
+            .. warning::
+
+               The function must be defined in a ``.py`` file (not in notebook/REPL)
+               and must use only supported math functions. See note above.
+
         mask : callable, dict, or None, optional
             Spatial mask. Can be:
 
             - ``None``: uniform mask (1 for all cells)
             - callable: ``(x, y, z) → scalar`` or ``(Hx, Hy, Hz)``
             - dict: ``{'region_name': value}`` for regional masks
+
+            .. warning::
+
+               The mask must be defined in a ``.py`` file (not in notebook/REPL)
+               and cannot depend on time ``t``. See note above.
 
         Examples
         --------
@@ -341,6 +399,54 @@ class Zeeman(EnergyTerm):
         ...     mask=lambda x,y,z: -np.sin(k * x)
         ... )
         """
+        # Validate func
+        if not callable(func):
+            raise TypeError(
+                f"func must be callable, got {type(func).__name__}. "
+                f"Example: lambda t: np.sin(omega*t)"
+            )
+
+        # Validate mask
+        if mask is not None:
+            if not callable(mask) and not isinstance(mask, dict):
+                raise TypeError(
+                    f"mask must be callable, dict, or None, got {type(mask).__name__}. "
+                    f"Example: lambda x,y,z: np.cos(k*x)"
+                )
+
+        # Validate func return type (test call at t=0)
+        try:
+            test_result = func(0)
+            if isinstance(test_result, (tuple, list)):
+                if len(test_result) != 3:
+                    raise ValueError(
+                        f"Vector func must return 3 components (Hx, Hy, Hz), got {len(test_result)}"
+                    )
+                # Check all components are numeric
+                for i, val in enumerate(test_result):
+                    if not isinstance(val, (int, float)):
+                        raise TypeError(
+                            f"Vector func component {i} must be numeric, got {type(val).__name__}"
+                        )
+            elif not isinstance(test_result, (int, float)):
+                raise TypeError(
+                    f"func must return scalar float or 3-tuple of floats, got {type(test_result).__name__}"
+                )
+        except ValueError:
+            # Re-raise ValueError as-is (validation errors)
+            raise
+        except TypeError as e:
+            # Re-raise TypeError with more context
+            raise TypeError(f"Error evaluating func at t=0: {e}") from e
+        except Exception as e:
+            # Other errors (e.g., missing variables) - warn but don't fail
+            # The error will be caught later during MIF generation if it persists
+            import warnings
+            warnings.warn(
+                f"Could not validate func at t=0: {type(e).__name__}: {e}. "
+                f"Ensure func is properly defined."
+            )
+
         self._terms.append((func, mask))
 
     def clear_time_terms(self):
