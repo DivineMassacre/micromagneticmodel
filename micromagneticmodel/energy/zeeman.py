@@ -1,4 +1,6 @@
 import collections
+import functools
+import inspect
 
 import numpy as np
 import discretisedfield as df
@@ -6,6 +8,184 @@ import ubermagutil as uu
 import ubermagutil.typesystem as ts
 
 from .energyterm import EnergyTerm
+
+# ============================================================================
+# Декоратор для пользовательских функций
+# ============================================================================
+
+def zeeman_func(func):
+    """Decorator to mark a function as supported for spatiotemporal Zeeman.
+
+    This decorator extracts and stores the function's source code and global
+    variables, enabling proper conversion to Tcl for OOMMF MIF generation.
+
+    Use this decorator when defining functions in Jupyter notebooks or REPL
+    to ensure reliable MIF generation.
+
+    Parameters
+    ----------
+    func : callable
+        Function to decorate. Must take 't' (temporal) or 'x,y,z' (spatial)
+        as arguments and return a scalar or 3-tuple.
+
+    Returns
+    -------
+    callable
+        Decorated function with __zeeman_source__ and __zeeman_globals__ attributes.
+
+    Examples
+    --------
+    >>> @zeeman_func
+    ... def temporal(t):
+    ...     return H0 * np.sin(omega * t)
+    >>>
+    >>> @zeeman_func
+    ... def mask(x, y, z):
+    ...     return np.cos(k * x)
+
+    Notes
+    -----
+    The decorator stores the following attributes on the function:
+
+    - ``__zeeman_source__``: Source code of the function
+    - ``__zeeman_globals__``: Dictionary of global numeric variables
+    - ``__is_zeeman_func__``: Boolean flag (True)
+
+    These attributes are used by oommfc during MIF generation.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    # Extract and store source code
+    try:
+        wrapper.__zeeman_source__ = inspect.getsource(func)
+    except (IOError, TypeError, OSError, IndentationError):
+        # For notebook/REPL, store repr instead
+        wrapper.__zeeman_source__ = repr(func)
+
+    # Store globals and closure variables (filter to only numeric values)
+    wrapper.__zeeman_globals__ = {}
+
+    # Extract from __globals__
+    if hasattr(func, '__globals__'):
+        for name, value in func.__globals__.items():
+            if isinstance(value, (int, float)) and not name.startswith('_'):
+                wrapper.__zeeman_globals__[name] = value
+
+    # Extract from closure (for lambda functions with captured variables)
+    if hasattr(func, '__closure__') and func.__closure__:
+        code = func.__code__
+        freevars = getattr(code, 'co_freevars', ())
+        for i, cell in enumerate(func.__closure__):
+            try:
+                value = cell.cell_contents
+                if isinstance(value, (int, float)):
+                    # Get variable name from freevars if available
+                    if i < len(freevars):
+                        name = freevars[i]
+                    else:
+                        name = f'_var_{i}'
+                    if not name.startswith('_'):
+                        wrapper.__zeeman_globals__[name] = value
+            except ValueError:
+                pass
+
+    # Mark as zeeman function
+    wrapper.__is_zeeman_func__ = True
+
+    return wrapper
+
+
+# ============================================================================
+# Валидация пользовательских функций
+# ============================================================================
+
+# Список поддерживаемых математических функций
+# Примечание: sign и clip удалены (не поддерживаются Tcl напрямую)
+SUPPORTED_MATH_FUNCTIONS = {
+    # Тригонометрические
+    'sin', 'cos', 'tan',
+    # Обратные тригонометрические
+    'arcsin', 'arccos', 'arctan', 'atan', 'atan2',
+    # Гиперболические
+    'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+    # Экспоненты и логарифмы
+    'exp', 'log', 'log10', 'log2',
+    # Степени и корни
+    'sqrt', 'abs',
+    # Округление
+    'floor', 'ceil', 'round',
+    # Минимум/максимум
+    'min', 'max',
+}
+
+SUPPORTED_MODULES = {'numpy', 'np', 'math'}
+
+
+def _validate_function_support(func):
+    """Validate that function uses only supported math functions.
+    
+    Parameters
+    ----------
+    func : callable
+        Function to validate.
+    
+    Raises
+    ------
+    ValueError
+        If function uses unsupported features.
+    
+    Notes
+    -----
+    This validation is best-effort and may not catch all cases.
+    If the function's source code cannot be obtained, validation is skipped.
+    """
+    import ast
+    
+    # Получить исходник
+    try:
+        source = inspect.getsource(func)
+    except (IOError, TypeError, OSError, IndentationError):
+        # Нет исходника - пропускаем валидацию (fallback разберётся)
+        return
+    
+    # Парсинг AST
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return  # Не удалось распарсить - пусть fallback разбирается
+    
+    # Поиск вызовов функций
+    unsupported = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            # Прямой вызов: sin(t)
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+                if func_name not in SUPPORTED_MATH_FUNCTIONS and func_name not in SUPPORTED_MODULES:
+                    # Проверить, не аргумент ли это или переменная
+                    if func_name not in ['t', 'x', 'y', 'z', 'amplitude', 'frequency', 
+                                         'phase', 'center', 'sigma', 'k', 'axis', 
+                                         'threshold', 'H0', 'omega', 'dt']:
+                        # Проверить, не встроенная ли это функция Python
+                        if func_name not in dir(__builtins__):
+                            unsupported.append(func_name)
+            
+            # Вызов с модулем: np.sin(t)
+            elif isinstance(node.func, ast.Attribute):
+                if isinstance(node.func.value, ast.Name):
+                    module = node.func.value.id
+                    func_name = node.func.attr
+                    if module in SUPPORTED_MODULES:
+                        if func_name not in SUPPORTED_MATH_FUNCTIONS:
+                            unsupported.append(f'{module}.{func_name}')
+    
+    if unsupported:
+        raise ValueError(
+            f"Function uses unsupported math functions: {', '.join(unsupported)}\n"
+            f"Supported functions: {', '.join(sorted(SUPPORTED_MATH_FUNCTIONS))}"
+        )
 
 
 @uu.inherit_docs
@@ -335,19 +515,47 @@ class Zeeman(EnergyTerm):
 
         .. note::
 
-           **Important limitations on custom functions:**
+           **Supported math functions:**
 
-           - ``func`` must be defined in a ``.py`` file (not in Jupyter notebook or REPL)
-             for proper MIF generation. This is required because the converter uses
-             ``inspect.getsource()`` to extract the function body.
-           - ``func`` can only use standard math functions: ``sin``, ``cos``, ``tan``,
-             ``exp``, ``log``, ``sqrt``, ``abs``, ``numpy.*`` equivalents.
-           - ``func`` must be a simple expression or return statement. Complex control
-             flow (if/else, loops) is not supported.
-           - ``mask`` has the same limitations as ``func``, but takes ``(x, y, z)`` arguments.
-           - ``mask`` is **fixed in time** - it cannot depend on ``t``.
-           - For ``add_harmonic_term()``, the parameters are automatically extracted,
-             but using explicit functions in a ``.py`` file is recommended for reliability.
+           The following math functions are supported in custom functions:
+
+           - **Trigonometric:** ``sin``, ``cos``, ``tan``
+           - **Inverse trigonometric:** ``arcsin``, ``arccos``, ``arctan``, ``atan``, ``atan2``
+           - **Hyperbolic:** ``sinh``, ``cosh``, ``tanh``
+           - **Exponential/Logarithmic:** ``exp``, ``log``, ``log10``, ``log2``
+           - **Power/Root:** ``sqrt``, ``abs``, ``sign``
+           - **Rounding:** ``floor``, ``ceil``, ``round``
+           - **Min/Max:** ``min``, ``max``, ``clip``
+
+           Functions can use ``numpy.*``, ``np.*``, or ``math.*`` prefixes, or call
+           functions directly (e.g., ``sin(t)``).
+
+        .. note::
+
+           **Using functions in Jupyter notebook:**
+
+           For reliable MIF generation, define functions in a ``.py`` file:
+
+           .. code-block:: python
+
+              # spatiotemporal_functions.py
+              H0 = 1e5
+              omega = 2 * np.pi * 1e9
+
+              def temporal_func(t):
+                  return H0 * np.sin(omega * t)
+
+           Alternatively, use the :func:`zeeman_func` decorator:
+
+           .. code-block:: python
+
+              from micromagneticmodel import zeeman_func
+
+              @zeeman_func
+              def temporal_func(t):
+                  return H0 * np.sin(omega * t)
+
+              zeeman.add_time_term(func=temporal_func, mask=None)
 
         Parameters
         ----------
@@ -359,8 +567,9 @@ class Zeeman(EnergyTerm):
 
             .. warning::
 
-               The function must be defined in a ``.py`` file (not in notebook/REPL)
-               and must use only supported math functions. See note above.
+               The function must use only supported math functions (see note above).
+               For reliable MIF generation, define functions in a ``.py`` file or
+               use the :func:`zeeman_func` decorator.
 
         mask : callable, dict, or None, optional
             Spatial mask. Can be:
@@ -371,8 +580,8 @@ class Zeeman(EnergyTerm):
 
             .. warning::
 
-               The mask must be defined in a ``.py`` file (not in notebook/REPL)
-               and cannot depend on time ``t``. See note above.
+               The mask must use only supported math functions and cannot depend
+               on time ``t``. See note above for details.
 
         Examples
         --------
@@ -398,6 +607,14 @@ class Zeeman(EnergyTerm):
         ...     func=lambda t: H0 * np.cos(omega * t),
         ...     mask=lambda x,y,z: -np.sin(k * x)
         ... )
+
+        Using decorator for notebook functions:
+
+        >>> from micromagneticmodel import zeeman_func
+        >>> @zeeman_func
+        ... def my_func(t):
+        ...     return H0 * np.sin(omega * t)
+        >>> zeeman.add_time_term(func=my_func, mask=None)
         """
         # Validate func
         if not callable(func):
@@ -413,6 +630,11 @@ class Zeeman(EnergyTerm):
                     f"mask must be callable, dict, or None, got {type(mask).__name__}. "
                     f"Example: lambda x,y,z: np.cos(k*x)"
                 )
+
+        # Validate supported math functions (best-effort)
+        _validate_function_support(func)
+        if mask is not None and callable(mask):
+            _validate_function_support(mask)
 
         # Validate func return type (test call at t=0)
         try:
@@ -573,6 +795,146 @@ class Zeeman(EnergyTerm):
             Field value at time t
         """
         return amplitude * np.exp(-t / tau)
+
+    @staticmethod
+    def sinh(t, amplitude=1):
+        """Hyperbolic sine temporal function.
+
+        H(t) = amplitude * sinh(t)
+
+        Parameters
+        ----------
+        t : float
+            Time (s)
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.sinh(t)
+
+    @staticmethod
+    def cosh(t, amplitude=1):
+        """Hyperbolic cosine temporal function.
+
+        H(t) = amplitude * cosh(t)
+
+        Parameters
+        ----------
+        t : float
+            Time (s)
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.cosh(t)
+
+    @staticmethod
+    def tanh(t, amplitude=1):
+        """Hyperbolic tangent temporal function.
+
+        H(t) = amplitude * tanh(t)
+
+        Parameters
+        ----------
+        t : float
+            Time (s)
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.tanh(t)
+
+    @staticmethod
+    def arcsin(t, amplitude=1):
+        """Inverse sine temporal function.
+
+        H(t) = amplitude * arcsin(t)
+
+        Parameters
+        ----------
+        t : float
+            Time (s), must be in [-1, 1]
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.arcsin(t)
+
+    @staticmethod
+    def arccos(t, amplitude=1):
+        """Inverse cosine temporal function.
+
+        H(t) = amplitude * arccos(t)
+
+        Parameters
+        ----------
+        t : float
+            Time (s), must be in [-1, 1]
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.arccos(t)
+
+    @staticmethod
+    def arctan(t, amplitude=1):
+        """Inverse tangent temporal function.
+
+        H(t) = amplitude * arctan(t)
+
+        Parameters
+        ----------
+        t : float
+            Time (s)
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.arctan(t)
+
+    @staticmethod
+    def log2(t, amplitude=1):
+        """Base-2 logarithmic temporal function.
+
+        H(t) = amplitude * log2(t)
+
+        Parameters
+        ----------
+        t : float
+            Time (s), must be > 0
+        amplitude : float, optional
+            Amplitude (A/m). Default is 1.
+
+        Returns
+        -------
+        float
+            Field value at time t
+        """
+        return amplitude * np.log2(t)
 
     # ========== ВСТРОЕННЫЕ ПРОСТРАНСТВЕННЫЕ МАСКИ ==========
 
@@ -752,8 +1114,15 @@ class Zeeman(EnergyTerm):
         ...     mask='gaussian',
         ...     sigma=50e-9
         ... )
+        
+        .. note::
+        
+           **Limitation:** add_harmonic_term with mask_kwargs (k, axis, sigma) requires
+           functions to be defined in a .py file or decorated with @zeeman_func for
+           proper Tcl conversion. Lambda functions with method calls are not supported.
         """
-        func = lambda t: self.sin(t, amplitude=amplitude, frequency=frequency, phase=phase)
+        # Use np.sin directly instead of self.sin for proper Tcl conversion
+        func = lambda t: amplitude * np.sin(2 * np.pi * frequency * t + phase)
 
         if isinstance(mask, str):
             mask_funcs = {

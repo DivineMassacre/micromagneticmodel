@@ -25,6 +25,9 @@ from .energy import Exchange as Exchange
 from .energy import MagnetoElastic as MagnetoElastic
 from .energy import UniaxialAnisotropy as UniaxialAnisotropy
 from .energy import Zeeman as Zeeman
+from .energy.zeeman import zeeman_func as zeeman_func
+from .energy.zeeman import _validate_function_support as _validate_function_support
+from .energy.zeeman import SUPPORTED_MATH_FUNCTIONS as SUPPORTED_MATH_FUNCTIONS
 from .evolver import Evolver as Evolver
 from .runner import ExternalRunner as ExternalRunner
 from .system import System as System
