@@ -531,12 +531,22 @@ class Zeeman(EnergyTerm):
            - **Inverse trigonometric:** ``arcsin``, ``arccos``, ``arctan``, ``atan``, ``atan2``
            - **Hyperbolic:** ``sinh``, ``cosh``, ``tanh``
            - **Exponential/Logarithmic:** ``exp``, ``log``, ``log10``, ``log2``
-           - **Power/Root:** ``sqrt``, ``abs``, ``sign``
+           - **Power/Root:** ``sqrt``, ``abs``
            - **Rounding:** ``floor``, ``ceil``, ``round``
-           - **Min/Max:** ``min``, ``max``, ``clip``
+           - **Min/Max:** ``min``, ``max``
 
            Functions can use ``numpy.*``, ``np.*``, or ``math.*`` prefixes, or call
            functions directly (e.g., ``sin(t)``).
+
+           .. note::
+
+              **Conditional statements (if/else) are not supported.**
+
+              Use mathematical equivalents instead:
+
+              - ``sign(x)`` → ``x/abs(x)`` (handle x=0 separately)
+              - ``clip(x, min, max)`` → ``min(max(x, min), max)``
+              - ``step(t-t0)`` → use ``(t > t0) * value`` pattern with numpy
 
         .. note::
 
