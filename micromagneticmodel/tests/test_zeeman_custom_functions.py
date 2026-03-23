@@ -11,6 +11,42 @@ from micromagneticmodel.energy.zeeman import (
 )
 
 
+# ============================================================================
+# Функции на уровне модуля для тестирования валидации
+# (нужны для inspect.getsource())
+# ============================================================================
+
+def _func_with_if(t):
+    """Test function with if statement."""
+    if t < 1e-9:
+        return 1e5
+    else:
+        return 0
+
+
+def _func_with_ternary(t):
+    """Test function with ternary operator."""
+    return 1e5 if t < 1e-9 else 0
+
+
+def _func_with_for(t):
+    """Test function with for loop."""
+    result = 0
+    for i in range(10):
+        result += np.sin(t * i)
+    return result
+
+
+def _func_with_while(t):
+    """Test function with while loop."""
+    result = 0
+    i = 0
+    while i < 10:
+        result += np.sin(t * i)
+        i += 1
+    return result
+
+
 class TestZeemanFuncDecorator:
     """Tests for @zeeman_func decorator."""
 
@@ -203,6 +239,36 @@ class TestFunctionValidation:
         assert 'sqrt' in SUPPORTED_MATH_FUNCTIONS
         assert 'abs' in SUPPORTED_MATH_FUNCTIONS
         # sign and clip removed - not supported by Tcl
+
+    def test_validation_rejects_if_statement(self):
+        """Test validation rejects if/else statements."""
+        with pytest.raises(ValueError, match="if/else"):
+            _validate_function_support(_func_with_if)
+
+    def test_validation_rejects_ternary_operator(self):
+        """Test validation rejects ternary operator (if-else expression)."""
+        with pytest.raises(ValueError, match="if/else"):
+            _validate_function_support(_func_with_ternary)
+
+    def test_validation_rejects_for_loop(self):
+        """Test validation rejects for loops."""
+        with pytest.raises(ValueError, match="for/while"):
+            _validate_function_support(_func_with_for)
+
+    def test_validation_rejects_while_loop(self):
+        """Test validation rejects while loops."""
+        with pytest.raises(ValueError, match="for/while"):
+            _validate_function_support(_func_with_while)
+
+    def test_validation_error_message_helpful(self):
+        """Test validation error message provides helpful alternatives."""
+        with pytest.raises(ValueError) as exc_info:
+            _validate_function_support(_func_with_if)
+
+        error_message = str(exc_info.value)
+        assert "mathematical equivalents" in error_message.lower()
+        assert "min" in error_message or "max" in error_message
+        assert "clip" in error_message or "step" in error_message
 
 
 class TestZeemanBuiltInExtendedFunctions:

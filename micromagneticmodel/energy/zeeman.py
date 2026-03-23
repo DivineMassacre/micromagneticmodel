@@ -125,37 +125,55 @@ SUPPORTED_MODULES = {'numpy', 'np', 'math'}
 
 def _validate_function_support(func):
     """Validate that function uses only supported math functions.
-    
+
     Parameters
     ----------
     func : callable
         Function to validate.
-    
+
     Raises
     ------
     ValueError
         If function uses unsupported features.
-    
+
     Notes
     -----
     This validation is best-effort and may not catch all cases.
     If the function's source code cannot be obtained, validation is skipped.
     """
     import ast
-    
+
     # Получить исходник
     try:
         source = inspect.getsource(func)
     except (IOError, TypeError, OSError, IndentationError):
         # Нет исходника - пропускаем валидацию (fallback разберётся)
         return
-    
+
     # Парсинг AST
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return  # Не удалось распарсить - пусть fallback разбирается
-    
+
+    # 🔴 Проверка на условные конструкции (if/else)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.If, ast.IfExp)):
+            raise ValueError(
+                "Conditional statements (if/else) are not supported in spatiotemporal "
+                "Zeeman functions. Use mathematical equivalents instead:\n"
+                "  - sign(x) → x/abs(x) (handle x=0 separately)\n"
+                "  - clip(x, min, max) → min(max(x, min), max)\n"
+                "  - step(t-t0) → use (t > t0) * value pattern with numpy"
+            )
+        
+        # 🔴 Проверка на циклы
+        if isinstance(node, (ast.For, ast.While)):
+            raise ValueError(
+                "Loops (for/while) are not supported in spatiotemporal Zeeman functions. "
+                "Use vectorized numpy operations instead."
+            )
+
     # Поиск вызовов функций
     unsupported = []
     for node in ast.walk(tree):
@@ -165,13 +183,13 @@ def _validate_function_support(func):
                 func_name = node.func.id
                 if func_name not in SUPPORTED_MATH_FUNCTIONS and func_name not in SUPPORTED_MODULES:
                     # Проверить, не аргумент ли это или переменная
-                    if func_name not in ['t', 'x', 'y', 'z', 'amplitude', 'frequency', 
-                                         'phase', 'center', 'sigma', 'k', 'axis', 
+                    if func_name not in ['t', 'x', 'y', 'z', 'amplitude', 'frequency',
+                                         'phase', 'center', 'sigma', 'k', 'axis',
                                          'threshold', 'H0', 'omega', 'dt']:
                         # Проверить, не встроенная ли это функция Python
                         if func_name not in dir(__builtins__):
                             unsupported.append(func_name)
-            
+
             # Вызов с модулем: np.sin(t)
             elif isinstance(node.func, ast.Attribute):
                 if isinstance(node.func.value, ast.Name):
@@ -180,7 +198,7 @@ def _validate_function_support(func):
                     if module in SUPPORTED_MODULES:
                         if func_name not in SUPPORTED_MATH_FUNCTIONS:
                             unsupported.append(f'{module}.{func_name}')
-    
+
     if unsupported:
         raise ValueError(
             f"Function uses unsupported math functions: {', '.join(unsupported)}\n"
@@ -367,7 +385,6 @@ class Zeeman(EnergyTerm):
         .. seealso::
 
             :meth:`add_time_term` : Method for adding spatiotemporal terms.
-            :meth:`add_harmonic_term` : Convenience method for harmonic fields.
 
     stage_count : int, optional
 
@@ -453,17 +470,8 @@ class Zeeman(EnergyTerm):
     ...     func=lambda t: H0 * np.sin(omega * t),
     ...     mask=lambda x,y,z: np.cos(k * x)
     ... )
-    >>> zeeman.add_time_term(
-    ...     func=lambda t: H0 * np.cos(omega * t),
-    ...     mask=lambda x,y,z: -np.sin(k * x)
-    ... )
 
-    9. Using built-in harmonic function (quick method).
-
-    >>> zeeman = mm.Zeeman()
-    >>> zeeman.add_harmonic_term(amplitude=1e5, frequency=1e9, mask='cos', k=2*np.pi/100e-9)
-
-    10. Using built-in temporal and spatial functions.
+    9. Using built-in temporal and spatial functions.
 
     >>> zeeman = mm.Zeeman()
     >>> zeeman.add_time_term(
@@ -473,7 +481,7 @@ class Zeeman(EnergyTerm):
     ...     mask_kwargs={'k': 2*np.pi/100e-9}
     ... )
 
-    11. An attempt to define the Zeeman energy term using a wrong value.
+    10. An attempt to define the Zeeman energy term using a wrong value.
 
     >>> zeeman = mm.Zeeman(H=(0, -1e7))  # length-2 vector
     Traceback (most recent call last):
@@ -1047,95 +1055,6 @@ class Zeeman(EnergyTerm):
         """
         coords = {'x': x, 'y': y, 'z': z}
         return 1.0 if coords[axis] > threshold else 0.0
-
-    # ========== МЕТОД ДЛЯ БЫСТРОГО ДОБАВЛЕНИЯ ==========
-
-    def add_harmonic_term(self, amplitude, frequency, phase=0,
-                          mask='uniform', **mask_kwargs):
-        """Add harmonic (sinusoidal) term with one line.
-
-        The total field contribution is:
-        H_term = amplitude * sin(2*pi*frequency*t + phase) * mask(x,y,z)
-
-        Parameters
-        ----------
-        amplitude : float
-            Field amplitude (A/m)
-        frequency : float
-            Frequency (Hz)
-        phase : float, optional
-            Phase shift (rad). Default is 0.
-        mask : str or callable, optional
-            Spatial mask. Can be:
-
-            - 'uniform': uniform mask (default)
-            - 'cos': cosine mask
-            - 'sin': sine mask
-            - 'gaussian': Gaussian mask
-            - 'step': step function mask
-            - callable: custom mask function
-
-        **mask_kwargs
-            Additional arguments for mask function:
-
-            - For 'cos'/'sin': k (wave vector), axis
-            - For 'gaussian': sigma, center
-            - For 'step': threshold, axis
-
-        Examples
-        --------
-        Simple harmonic field:
-
-        >>> zeeman = mm.Zeeman()
-        >>> zeeman.add_harmonic_term(amplitude=1e5, frequency=1e9)
-
-        Standing wave:
-
-        >>> zeeman.add_harmonic_term(
-        ...     amplitude=1e5,
-        ...     frequency=1e9,
-        ...     mask='cos',
-        ...     k=2*np.pi/100e-9,
-        ...     axis='x'
-        ... )
-
-        Traveling wave (two terms):
-
-        >>> k = 2*np.pi/100e-9
-        >>> zeeman = mm.Zeeman()
-        >>> zeeman.add_harmonic_term(1e5, 1e9, phase=0, mask='sin', k=k, axis='x')
-        >>> zeeman.add_harmonic_term(1e5, 1e9, phase=np.pi/2, mask='cos', k=k, axis='x')
-
-        Gaussian spatial profile:
-
-        >>> zeeman.add_harmonic_term(
-        ...     amplitude=1e5,
-        ...     frequency=1e9,
-        ...     mask='gaussian',
-        ...     sigma=50e-9
-        ... )
-        
-        .. note::
-        
-           **Limitation:** add_harmonic_term with mask_kwargs (k, axis, sigma) requires
-           functions to be defined in a .py file or decorated with @zeeman_func for
-           proper Tcl conversion. Lambda functions with method calls are not supported.
-        """
-        # Use np.sin directly instead of self.sin for proper Tcl conversion
-        func = lambda t: amplitude * np.sin(2 * np.pi * frequency * t + phase)
-
-        if isinstance(mask, str):
-            mask_funcs = {
-                'uniform': self.uniform,
-                'cos': self.cos_mask,
-                'sin': self.sin_mask,
-                'gaussian': self.gaussian_mask,
-                'step': self.step_mask,
-            }
-            mask_func = mask_funcs.get(mask, self.uniform)
-            mask = lambda x, y, z: mask_func(x, y, z, **mask_kwargs)
-
-        self.add_time_term(func=func, mask=mask)
 
     @property
     def _reprlatex(self):
