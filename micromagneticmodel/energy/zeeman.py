@@ -508,12 +508,13 @@ class Zeeman(EnergyTerm):
             Default is None.
         dt : float, optional
             Time step for spatiotemporal field updates (seconds).
-            Default is 1e-13 (0.1 ps).
+            If None, automatically calculated as t/n from TimeDriver parameters.
+            Default is None (auto-calculate).
         """
         self.H = H if H is not None else (0, 0, 0)
         self._terms = spatiotemporal_terms if spatiotemporal_terms is not None else []
         self._stage_count = stage_count  # None means auto from driver
-        self._dt = dt if dt is not None else 1e-13
+        self._dt = dt  # None means auto-calculate from t/n in oommfc
         super().__init__(**kwargs)
 
     def add_time_term(self, func, mask=None):
